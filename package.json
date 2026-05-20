@@ -1,0 +1,64 @@
+{
+  "name": "pi-agent-subagents",
+  "version": "0.1.0",
+  "description": "A pi extension that brings autonomous sub-agents to pi",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "subagent",
+    "agent",
+    "autonomous"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stegmannb/pi-agent-subagents.git"
+  },
+  "author": "Bastian Stegmann",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/stegmannb/pi-agent-subagents/issues"
+  },
+  "homepage": "https://github.com/stegmannb/pi-agent-subagents",
+  "scripts": {
+    "fmt": "oxfmt src/",
+    "lint": "oxlint src/",
+    "check": "tsc --noEmit",
+    "ci:fmt": "oxfmt --check src/",
+    "ci:lint": "pnpm run lint",
+    "ci:check": "pnpm run check"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.70.5",
+    "@mariozechner/pi-coding-agent": ">=0.70.5",
+    "@mariozechner/pi-tui": ">=0.70.5"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@mariozechner/pi-tui": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.73.0",
+    "@mariozechner/pi-coding-agent": "^0.73.0",
+    "@mariozechner/pi-tui": "^0.73.0",
+    "@types/node": "^24",
+    "oxfmt": "^0.33.0",
+    "oxlint": "^1.0.0",
+    "typescript": "^5"
+  }
+}
