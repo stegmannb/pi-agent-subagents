@@ -45,6 +45,12 @@ stdenv.mkDerivation (finalAttrs: {
     cp -r src "$out/"
     cp package.json "$out/"
 
+    # Copy runtime dependencies into $out/node_modules.
+    # Use cp -rL to dereference pnpm virtual-store symlinks so the result is
+    # a self-contained directory that works from any location in the store.
+    mkdir -p "$out/node_modules"
+    cp -rL node_modules/@sinclair "$out/node_modules/@sinclair"
+
     runHook postInstall
   '';
 
