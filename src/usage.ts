@@ -3,6 +3,7 @@
  */
 
 import type { LifetimeUsage } from "./types.ts";
+export type { LifetimeUsage };
 
 export function getLifetimeTotal(u?: LifetimeUsage): number {
   return u ? u.input + u.output + u.cacheWrite : 0;
