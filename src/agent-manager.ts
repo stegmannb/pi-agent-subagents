@@ -251,6 +251,11 @@ export class AgentManager {
               (record.result ?? "") +
               `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
           }
+          if (wtResult.worktreeError) {
+            record.result =
+              (record.result ?? "") +
+              `\n\n---\n⚠️ ${wtResult.worktreeError}`;
+          }
         }
 
         if (options.isBackground) {
@@ -290,6 +295,16 @@ export class AgentManager {
               options.description,
             );
             record.worktreeResult = wtResult;
+            if (wtResult.hasChanges && wtResult.branch) {
+              record.error =
+                (record.error ?? "") +
+                `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
+            }
+            if (wtResult.worktreeError) {
+              record.error =
+                (record.error ?? "") +
+                `\n\n---\n⚠️ ${wtResult.worktreeError}`;
+            }
           } catch {
             /* ignore */
           }
