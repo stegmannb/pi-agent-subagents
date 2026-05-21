@@ -1,5 +1,5 @@
 {
-  "name": "pi-agent-subagents",
+  "name": "pi-subagents",
   "version": "0.1.0",
   "description": "A pi extension that brings autonomous sub-agents to pi",
   "keywords": [

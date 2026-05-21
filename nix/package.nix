@@ -36,8 +36,8 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/pi-subagents"
-    cp -r . "$out/pi-subagents/"
+    mkdir -p "$out/subagents"
+    cp -r . "$out/subagents/"
 
     runHook postInstall
   '';
