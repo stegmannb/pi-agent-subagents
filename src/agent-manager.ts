@@ -364,6 +364,7 @@ export class AgentManager {
   ): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
     if (!record?.session) return undefined;
+    if (record.status === "running") return undefined;
 
     record.status = "running";
     record.startedAt = Date.now();
