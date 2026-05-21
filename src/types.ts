@@ -3,6 +3,7 @@
  */
 
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { WorktreeCleanupResult } from "./worktree.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -75,7 +76,7 @@ export interface AgentRecord {
   resultConsumed?: boolean;
   pendingSteers?: string[];
   worktree?: { path: string; branch: string };
-  worktreeResult?: { hasChanges: boolean; branch?: string };
+  worktreeResult?: WorktreeCleanupResult;
   toolCallId?: string;
   outputFile?: string;
   outputCleanup?: () => void;

@@ -17,6 +17,8 @@ export interface WorktreeCleanupResult {
   hasChanges: boolean;
   branch?: string;
   path?: string;
+  /** Set when a git operation failed and the worktree was preserved for manual recovery. */
+  worktreeError?: string;
 }
 
 export function createWorktree(
@@ -109,13 +111,14 @@ export function cleanupWorktree(
     removeWorktree(cwd, worktree.path);
 
     return { hasChanges: true, branch: worktree.branch, path: worktree.path };
-  } catch {
-    try {
-      removeWorktree(cwd, worktree.path);
-    } catch {
-      /* ignore */
-    }
-    return { hasChanges: false };
+  } catch (err) {
+    // Do NOT remove the worktree — preserve it so the user can recover their work.
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      hasChanges: false,
+      path: worktree.path,
+      worktreeError: `Git operation failed; work preserved at ${worktree.path} — ${reason}`,
+    };
   }
 }
 
