@@ -18,6 +18,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   getAgentDir,
+  parseFrontmatter,
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -1071,9 +1072,11 @@ Guidelines:
   async function disableAgent(ctx: ExtensionCommandContext, name: string) {
     const file = findAgentFile(name);
     if (file) {
-      const content = readFileSync(file.path, "utf-8");
-      if (content.includes("\nenabled: false\n")) { ctx.ui.notify(`${name} is already disabled.`, "info"); return; }
-      const updated = content.replace(/^---\n/, "---\nenabled: false\n");
+      const raw = readFileSync(file.path, "utf-8");
+      const content = raw.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+      const { frontmatter } = parseFrontmatter<Record<string, unknown>>(content);
+      if (frontmatter.enabled === false) { ctx.ui.notify(`${name} is already disabled.`, "info"); return; }
+      const updated = content.replace(/^---[ \t]*\n/, "---\nenabled: false\n");
       const { writeFileSync } = await import("node:fs");
       writeFileSync(file.path, updated, "utf-8");
       reloadCustomAgents();
@@ -1094,8 +1097,9 @@ Guidelines:
   async function enableAgent(ctx: ExtensionCommandContext, name: string) {
     const file = findAgentFile(name);
     if (!file) return;
-    const content = readFileSync(file.path, "utf-8");
-    const updated = content.replace(/^(---\n)enabled: false\n/, "$1");
+    const raw = readFileSync(file.path, "utf-8");
+    const content = raw.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+    const updated = content.replace(/^(---[ \t]*\n)enabled: false\n/, "$1");
     const { writeFileSync } = await import("node:fs");
     if (updated.trim() === "---\n---" || updated.trim() === "---\n---\n") {
       unlinkSync(file.path);
