@@ -15,16 +15,17 @@ export const BUILTIN_TOOL_NAMES: string[] = [
   "ls",
 ];
 
-const agents = new Map<string, AgentConfig>();
+let agents: ReadonlyMap<string, AgentConfig> = new Map();
 
 export function registerAgents(userAgents: Map<string, AgentConfig>): void {
-  agents.clear();
+  const next = new Map<string, AgentConfig>();
   for (const [name, config] of DEFAULT_AGENTS) {
-    agents.set(name, config);
+    next.set(name, config);
   }
   for (const [name, config] of userAgents) {
-    agents.set(name, config);
+    next.set(name, config);
   }
+  agents = next;
 }
 
 function resolveKey(name: string): string | undefined {
