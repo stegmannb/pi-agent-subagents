@@ -3,6 +3,7 @@
  */
 
 import type { Model } from "@mariozechner/pi-ai";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
   type AgentSession,
@@ -24,6 +25,8 @@ import { DEFAULT_AGENTS } from "./default-agents.ts";
 import { detectEnv } from "./env.ts";
 import { buildAgentPrompt } from "./prompts.ts";
 import type { SubagentType, ThinkingLevel } from "./types.ts";
+
+export const agentContext = new AsyncLocalStorage<{ agentId: string }>();
 
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"];
 
@@ -338,7 +341,7 @@ export async function runAgent(
   }
 
   try {
-    await session.prompt(effectivePrompt);
+    await agentContext.run({ agentId: options.agentId ?? "" }, () => session.prompt(effectivePrompt));
   } finally {
     unsubTurns();
     collector.unsubscribe();

@@ -58,6 +58,7 @@ export interface AgentRecord {
   status:
     | "queued"
     | "running"
+    | "waiting"
     | "completed"
     | "steered"
     | "aborted"
@@ -83,6 +84,14 @@ export interface AgentRecord {
   lifetimeUsage: LifetimeUsage;
   compactionCount: number;
   invocation?: AgentInvocation;
+  helpResolver?: (response: string) => void;
+  helpMessage?: string;
+}
+
+export interface HelpRequestDetails {
+  agentId: string;
+  description: string;
+  message: string;
 }
 
 export interface NotificationDetails {

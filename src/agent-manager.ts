@@ -364,7 +364,7 @@ export class AgentManager {
   ): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
     if (!record?.session) return undefined;
-    if (record.status === "running") return undefined;
+    if (record.status === "running" || record.status === "waiting") return undefined;
 
     record.status = "running";
     record.startedAt = Date.now();
@@ -419,6 +419,16 @@ export class AgentManager {
       return true;
     }
 
+    if (record.status === "waiting") {
+      const resolve = record.helpResolver;
+      record.helpResolver = undefined;
+      record.helpMessage = undefined;
+      record.status = "stopped";
+      record.completedAt = Date.now();
+      resolve?.("[cancelled: agent was stopped]");
+      return true;
+    }
+
     if (record.status !== "running") return false;
     record.abortController?.abort();
     record.status = "stopped";
@@ -435,7 +445,7 @@ export class AgentManager {
   private cleanup() {
     const cutoff = Date.now() - 10 * 60_000;
     for (const [id, record] of this.agents) {
-      if (record.status === "running" || record.status === "queued")
+      if (record.status === "running" || record.status === "queued" || record.status === "waiting")
         continue;
       if ((record.completedAt ?? 0) >= cutoff) continue;
       this.removeRecord(id, record);
@@ -444,7 +454,7 @@ export class AgentManager {
 
   clearCompleted(): void {
     for (const [id, record] of this.agents) {
-      if (record.status === "running" || record.status === "queued")
+      if (record.status === "running" || record.status === "queued" || record.status === "waiting")
         continue;
       this.removeRecord(id, record);
     }
@@ -452,7 +462,7 @@ export class AgentManager {
 
   hasRunning(): boolean {
     return [...this.agents.values()].some(
-      (r) => r.status === "running" || r.status === "queued",
+      (r) => r.status === "running" || r.status === "queued" || r.status === "waiting",
     );
   }
 
@@ -468,7 +478,15 @@ export class AgentManager {
     }
     this.queue = [];
     for (const record of this.agents.values()) {
-      if (record.status === "running") {
+      if (record.status === "waiting") {
+        const resolve = record.helpResolver;
+        record.helpResolver = undefined;
+        record.helpMessage = undefined;
+        record.status = "stopped";
+        record.completedAt = Date.now();
+        resolve?.("[cancelled: all agents stopped]");
+        count++;
+      } else if (record.status === "running") {
         record.abortController?.abort();
         record.status = "stopped";
         record.completedAt = Date.now();
@@ -483,7 +501,7 @@ export class AgentManager {
       this.drainQueue();
       const pending = [...this.agents.values()]
         .filter(
-          (r) => r.status === "running" || r.status === "queued",
+          (r) => r.status === "running" || r.status === "queued" || r.status === "waiting",
         )
         .map((r) => r.promise)
         .filter(Boolean);

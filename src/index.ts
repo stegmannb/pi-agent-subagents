@@ -25,6 +25,7 @@ import { Type } from "@sinclair/typebox";
 import { AgentManager } from "./agent-manager.ts";
 import {
   getAgentConversation,
+  agentContext,
   getDefaultMaxTurns,
   getGraceTurns,
   normalizeMaxTurns,
@@ -53,6 +54,7 @@ import type {
   AgentInvocation,
   AgentRecord,
   JoinMode,
+  HelpRequestDetails,
   NotificationDetails,
   SubagentType,
 } from "./types.ts";
@@ -265,6 +267,26 @@ export default function (pi: ExtensionAPI) {
 
       const all = [d, ...(d.others ?? [])];
       return new Text(all.map(renderOne).join("\n"), 0, 0);
+    },
+  );
+
+  // ---- Ping (request_help) notification renderer ----
+  pi.registerMessageRenderer<HelpRequestDetails>(
+    "subagent-ping",
+    (message, _opts, theme) => {
+      const d = message.details;
+      if (!d) return undefined;
+      const line =
+        theme.fg("warning", "⏸") +
+        " " +
+        theme.bold(d.description) +
+        " " +
+        theme.fg("warning", "needs help") +
+        "\n  " +
+        theme.fg("dim", d.message) +
+        "\n  " +
+        theme.fg("dim", `Use steer_subagent("${d.agentId}", "<response>") to reply.`);
+      return new Text(line, 0, 0);
     },
   );
 
@@ -845,7 +867,7 @@ Guidelines:
       const record = manager.getRecord(params.agent_id);
       if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
 
-      if (params.wait && record.status === "running" && record.promise) {
+      if (params.wait && (record.status === "running" || record.status === "waiting") && record.promise) {
         record.resultConsumed = true;
         cancelNudge(params.agent_id);
         await record.promise;
@@ -863,15 +885,17 @@ Guidelines:
 
       let output = `Agent: ${record.id}\nType: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\nDescription: ${record.description}\n\n`;
 
-      if (record.status === "running") {
-        output += "Agent is still running. Use wait: true or check back later.";
+      if (record.status === "running" || record.status === "waiting") {
+        output += record.status === "waiting"
+          ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
+          : "Agent is still running. Use wait: true or check back later.";
       } else if (record.status === "error") {
         output += `Error: ${record.error}`;
       } else {
         output += record.result?.trim() || "No output.";
       }
 
-      if (record.status !== "running" && record.status !== "queued") {
+      if (record.status !== "running" && record.status !== "queued" && record.status !== "waiting") {
         record.resultConsumed = true;
         cancelNudge(params.agent_id);
       }
@@ -885,6 +909,49 @@ Guidelines:
     },
   }));
 
+  // ---- request_help tool ----
+
+  pi.registerTool(defineTool({
+    name: "request_help",
+    label: "Request Help",
+    description: "Pause and ask the parent for help when stuck. The parent will be notified and can respond via steer_subagent.",
+    parameters: Type.Object({
+      message: Type.String({ description: "Describe what you need help with." }),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const ctx = agentContext.getStore();
+      if (!ctx?.agentId) return textResult("Error: request_help called outside of a subagent context.");
+
+      const record = manager.getRecord(ctx.agentId);
+      if (!record) return textResult("Error: agent record not found.");
+
+      const response = await new Promise<string>((resolve) => {
+        record.helpResolver = resolve;
+        record.helpMessage = params.message;
+        record.status = "waiting";
+
+        pi.sendMessage<HelpRequestDetails>({
+          customType: "subagent-ping",
+          content: `Agent "${record.description}" needs help: ${params.message}`,
+          display: true,
+          details: { agentId: record.id, description: record.description, message: params.message },
+        }, { deliverAs: "followUp", triggerTurn: true });
+
+        widget.update();
+
+        signal.addEventListener("abort", () => {
+          if (record.helpResolver === resolve) {
+            record.helpResolver = undefined;
+            record.helpMessage = undefined;
+            resolve("[cancelled: agent was aborted]");
+          }
+        }, { once: true });
+      });
+
+      return textResult(`Parent responded: ${response}`);
+    },
+  }));
+
   // ---- steer_subagent tool ----
 
   pi.registerTool(defineTool({
@@ -892,12 +959,25 @@ Guidelines:
     label: "Steer Agent",
     description: "Send a steering message to a running agent.",
     parameters: Type.Object({
-      agent_id: Type.String({ description: "The agent ID to steer (must be running)." }),
+      agent_id: Type.String({ description: "The agent ID to steer (must be running or waiting for help)." }),
       message: Type.String({ description: "The steering message to send." }),
     }),
     execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
       const record = manager.getRecord(params.agent_id);
       if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
+
+      // Respond to a waiting agent (request_help)
+      if (record.status === "waiting" && record.helpResolver) {
+        const resolve = record.helpResolver;
+        record.helpResolver = undefined;
+        record.helpMessage = undefined;
+        record.status = "running";
+        resolve(params.message);
+        widget.update();
+        pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+        return textResult(`Response delivered to waiting agent ${record.id}.`);
+      }
+
       if (record.status !== "running") return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}).`);
       if (!record.session) {
         if (!record.pendingSteers) record.pendingSteers = [];

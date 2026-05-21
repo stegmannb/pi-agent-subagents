@@ -84,6 +84,7 @@ export interface AgentDetails {
   status:
     | "queued"
     | "running"
+    | "waiting"
     | "completed"
     | "steered"
     | "aborted"
@@ -316,7 +317,7 @@ export class AgentWidget {
 
   private renderWidget(tui: any, theme: Theme): string[] {
     const allAgents = this.manager.listAgents();
-    const running = allAgents.filter((a) => a.status === "running");
+    const running = allAgents.filter((a) => a.status === "running" || a.status === "waiting");
     const queued = allAgents.filter((a) => a.status === "queued");
     const finished = allAgents.filter(
       (a) =>
@@ -375,18 +376,22 @@ export class AgentWidget {
       if (tokenText) parts.push(tokenText);
       parts.push(elapsed);
 
-      const activity = bg
-        ? describeActivity(bg.activeTools, bg.responseText)
-        : "thinking…";
+      const isWaiting = (a as any).status === "waiting";
+      const icon = isWaiting ? theme.fg("warning", "⏸") : theme.fg("accent", frame);
+      const activity = isWaiting
+        ? theme.fg("warning", `waiting for parent: ${(a as any).helpMessage ?? "help requested"}`)
+        : bg
+          ? describeActivity(bg.activeTools, bg.responseText)
+          : "thinking…";
 
       runningLines.push([
         truncate(
           theme.fg("dim", "├─") +
-            ` ${theme.fg("accent", frame)} ${theme.bold(name)}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}`,
+            ` ${icon} ${theme.bold(name)}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}`,
         ),
         truncate(
           theme.fg("dim", "│  ") +
-            theme.fg("dim", `  ⎿  ${activity}`),
+            theme.fg(isWaiting ? "warning" : "dim", `  ⎿  ${activity}`),
         ),
       ]);
     }
@@ -477,11 +482,14 @@ export class AgentWidget {
     const allAgents = this.manager.listAgents();
 
     let runningCount = 0;
+    let waitingCount = 0;
     let queuedCount = 0;
     let hasFinished = false;
     for (const a of allAgents) {
       if (a.status === "running") {
         runningCount++;
+      } else if (a.status === "waiting") {
+        waitingCount++;
       } else if (a.status === "queued") {
         queuedCount++;
       } else if (
@@ -491,7 +499,7 @@ export class AgentWidget {
         hasFinished = true;
       }
     }
-    const hasActive = runningCount > 0 || queuedCount > 0;
+    const hasActive = runningCount > 0 || waitingCount > 0 || queuedCount > 0;
 
     if (!hasActive && !hasFinished) {
       if (this.widgetRegistered) {
@@ -519,9 +527,11 @@ export class AgentWidget {
       const statusParts: string[] = [];
       if (runningCount > 0)
         statusParts.push(`${runningCount} running`);
+      if (waitingCount > 0)
+        statusParts.push(`${waitingCount} waiting`);
       if (queuedCount > 0)
         statusParts.push(`${queuedCount} queued`);
-      const total = runningCount + queuedCount;
+      const total = runningCount + waitingCount + queuedCount;
       newStatusText = `${statusParts.join(", ")} agent${total === 1 ? "" : "s"}`;
     }
     if (newStatusText !== this.lastStatusText) {
