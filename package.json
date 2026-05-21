@@ -12,7 +12,7 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./index.ts"
     ]
   },
   "repository": {
@@ -26,10 +26,10 @@
   },
   "homepage": "https://github.com/stegmannb/pi-agent-subagents",
   "scripts": {
-    "fmt": "oxfmt src/",
-    "lint": "oxlint src/",
+    "fmt": "oxfmt src/ index.ts",
+    "lint": "oxlint src/ index.ts",
     "check": "tsc --noEmit",
-    "ci:fmt": "oxfmt --check src/",
+    "ci:fmt": "oxfmt --check src/ index.ts",
     "ci:lint": "pnpm run lint",
     "ci:check": "pnpm run check"
   },

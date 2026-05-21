@@ -39,11 +39,6 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out/pi-subagents"
     cp -r . "$out/pi-subagents/"
 
-    # Root entry point expected by pi at $out/pi-subagents/index.ts
-    cat > "$out/pi-subagents/index.ts" <<'EOF'
-export { default } from "./src/index.ts";
-EOF
-
     runHook postInstall
   '';
 
