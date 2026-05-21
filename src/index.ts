@@ -1046,11 +1046,13 @@ Guidelines:
     if (existsSync(targetPath)) {
       if (!await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)) return;
     }
+    const yamlStr = (s: string) =>
+      `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r")}"`;
     const fmFields: string[] = [];
-    fmFields.push(`description: ${cfg.description}`);
-    if (cfg.displayName) fmFields.push(`display_name: ${cfg.displayName}`);
+    fmFields.push(`description: ${yamlStr(cfg.description)}`);
+    if (cfg.displayName) fmFields.push(`display_name: ${yamlStr(cfg.displayName)}`);
     fmFields.push(`tools: ${cfg.builtinToolNames?.join(", ") || "all"}`);
-    if (cfg.model) fmFields.push(`model: ${cfg.model}`);
+    if (cfg.model) fmFields.push(`model: ${yamlStr(cfg.model)}`);
     if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
     if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
     fmFields.push(`prompt_mode: ${cfg.promptMode}`);
