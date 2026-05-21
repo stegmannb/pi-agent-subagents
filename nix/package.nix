@@ -13,12 +13,7 @@ stdenv.mkDerivation (finalAttrs: {
   pname = packageJson.name;
   version = packageJson.version;
 
-  src = lib.cleanSourceWith {
-    src = lib.cleanSource ../.;
-    filter =
-      path: _type:
-      !(lib.hasInfix "/node_modules/" path) && !(lib.hasSuffix "/node_modules" path);
-  };
+  src = lib.cleanSource ../.;
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
@@ -42,19 +37,12 @@ stdenv.mkDerivation (finalAttrs: {
     runHook preInstall
 
     mkdir -p "$out/pi-subagents"
-    cp -r src "$out/pi-subagents/"
-    cp package.json "$out/pi-subagents/"
+    cp -r . "$out/pi-subagents/"
 
     # Root entry point expected by pi at $out/pi-subagents/index.ts
     cat > "$out/pi-subagents/index.ts" <<'EOF'
 export { default } from "./src/index.ts";
 EOF
-
-    # Copy runtime dependencies into $out/pi-subagents/node_modules.
-    # Use cp -rL to dereference pnpm virtual-store symlinks so the result is
-    # a self-contained directory that works from any location in the store.
-    mkdir -p "$out/pi-subagents/node_modules"
-    cp -rL node_modules/@sinclair "$out/pi-subagents/node_modules/@sinclair"
 
     runHook postInstall
   '';
