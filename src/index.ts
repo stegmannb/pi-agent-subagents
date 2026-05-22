@@ -45,7 +45,7 @@ import {
 } from "./agent-types.ts";
 import { loadCustomAgents } from "./custom-agents.ts";
 import { GroupJoinManager } from "./group-join.ts";
-import { resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.ts";
+import { resolveAgentInvocationConfig, resolveJoinMode, VALID_THINKING_LEVELS } from "./invocation-config.ts";
 import { type ModelRegistry, resolveModel } from "./model-resolver.ts";
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.ts";
 import { applyAndEmitLoaded, saveAndEmitChanged, type SubagentsSettings } from "./settings.ts";
@@ -719,6 +719,11 @@ Guidelines:
       const fellBack = resolved === undefined;
       const displayName = getDisplayName(subagentType);
       const customConfig = getAgentConfig(subagentType);
+
+      if (params.thinking && !VALID_THINKING_LEVELS.has(params.thinking)) {
+        return textResult(`Invalid thinking level "${params.thinking}". Allowed: ${[...VALID_THINKING_LEVELS].join(", ")}.`);
+      }
+
       const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
 
       let model = ctx.model;
