@@ -1345,6 +1345,107 @@ Guidelines:
     ctx.ui.notify(message, level);
   }
 
+  // ---- /plan command helpers ----
+
+  function getRecordOutput(record: AgentRecord): string {
+    if (record.completionReport) {
+      const r = record.completionReport;
+      return r.summary + (r.artifacts?.length ? `\n\nArtifacts: ${r.artifacts.join(", ")}` : "");
+    }
+    return record.result?.trim() ?? "(no output)";
+  }
+
+  function parseNumberedTasks(text: string): string[] {
+    const tasks: string[] = [];
+    for (const line of text.split("\n")) {
+      const match = line.match(/^\s*\d+\.\s+(.+)/);
+      if (match) tasks.push(match[1]!.trim());
+    }
+    return tasks;
+  }
+
+  async function waitForAgent(id: string): Promise<AgentRecord> {
+    const record = manager.getRecord(id);
+    if (!record) throw new Error(`Agent ${id} not found`);
+    if (record.readyPromise) await record.readyPromise;
+    const updated = manager.getRecord(id);
+    if (updated?.promise) await updated.promise;
+    return manager.getRecord(id) ?? record;
+  }
+
+  function isCancelled(record: AgentRecord): boolean {
+    return record.status === "stopped" || record.status === "aborted";
+  }
+
+  // ---- /plan command ----
+
+  pi.registerCommand("plan", {
+    description: "Scout \u2192 plan \u2192 execute \u2192 review workflow for complex tasks",
+    handler: async (args, ctx) => {
+      const task = (args ?? "").trim();
+      if (!task) {
+        ctx.ui.notify("Usage: /plan <task description>", "warning");
+        return;
+      }
+
+      const spawnCtx = currentCtx;
+      if (!spawnCtx) {
+        ctx.ui.notify("No active session context available.", "warning");
+        return;
+      }
+
+      const report = (msg: string, level: "info" | "warning" | "error" = "info") =>
+        ctx.ui.notify(msg, level);
+
+      // Phase 1: Scout
+      report("\u23F3 Scout \u2014 exploring codebase\u2026");
+      const scoutRecord = await manager.spawnAndWait(pi, spawnCtx, "Explore",
+        `Scout the codebase to understand what is relevant for this task:\n\n${task}\n\nExplore directory structure, locate key files, and summarize your findings concisely. Focus on what a developer needs to know to implement the task. Call report_complete with your findings as the summary.`,
+        { description: "scout" },
+      );
+      if (isCancelled(scoutRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      const scoutResult = getRecordOutput(scoutRecord);
+      report("\u2713 Scout done \u2014 planning\u2026");
+
+      // Phase 2: Plan
+      const planRecord = await manager.spawnAndWait(pi, spawnCtx, "Plan",
+        `Create an implementation plan for the following task.\n\n## Task\n${task}\n\n## Scout Findings\n${scoutResult}\n\nOutput a numbered task list under a "## Implementation Tasks" heading. Each task must be a single, independently actionable unit of work. Maximum 6 tasks. Call report_complete with the full plan as the summary.`,
+        { description: "plan" },
+      );
+      if (isCancelled(planRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      const planResult = getRecordOutput(planRecord);
+      const tasks = parseNumberedTasks(planResult);
+      if (tasks.length === 0) {
+        report("Plan produced no parseable tasks. Check agent output.", "warning");
+        return;
+      }
+      report(`\u2713 Plan done \u2014 ${tasks.length} task(s) \u2014 executing in parallel\u2026`);
+
+      // Phase 3: Execute (parallel workers)
+      const workerIds = tasks.map((taskDesc, i) =>
+        manager.spawn(pi, spawnCtx, "general-purpose",
+          `You are implementing one task as part of a larger plan.\n\n## Overall Goal\n${task}\n\n## Your Specific Task\n${taskDesc}\n\n## Full Plan\n${planResult}\n\n## Scout Findings\n${scoutResult}\n\nImplement your specific task completely. Call report_complete when done.`,
+          { description: `worker ${i + 1}/${tasks.length}`, isBackground: true },
+        )
+      );
+      const workerRecords = await Promise.all(workerIds.map(waitForAgent));
+      if (workerRecords.some(isCancelled)) { report("Plan workflow cancelled during execution.", "warning"); return; }
+      const workerSummaries = workerRecords
+        .map((r, i) => `### Task ${i + 1}: ${tasks[i]}\n${getRecordOutput(r)}`)
+        .join("\n\n");
+      report("\u2713 Execute done \u2014 reviewing\u2026");
+
+      // Phase 4: Review
+      const reviewRecord = await manager.spawnAndWait(pi, spawnCtx, "code-review",
+        `Review the implementation for the following task.\n\n## Original Task\n${task}\n\n## Plan\n${planResult}\n\n## Worker Results\n${workerSummaries}\n\nValidate that all plan items are addressed, check for correctness, and summarize what was done and any issues found. Call report_complete with your verdict.`,
+        { description: "review" },
+      );
+      if (isCancelled(reviewRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      const reviewResult = getRecordOutput(reviewRecord);
+      report(`\u2713 Plan workflow complete.\n\n${reviewResult}`);
+    },
+  });
+
   pi.registerCommand("agents", {
     description: "Manage agents",
     handler: async (_args, ctx) => { await showAgentsMenu(ctx); },
