@@ -41,6 +41,7 @@ import {
 } from "./agent-types.ts";
 import { loadCustomAgents } from "./custom-agents.ts";
 import { GroupJoinManager } from "./group-join.ts";
+import { CmuxReporter, isCmuxAvailable } from "./cmux.ts";
 import { resolveAgentInvocationConfig, resolveJoinMode, VALID_THINKING_LEVELS } from "./invocation-config.ts";
 import { type ModelRegistry, resolveModel } from "./model-resolver.ts";
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.ts";
@@ -463,6 +464,8 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
+  const cmux = new CmuxReporter({ enabled: false, lingerMs: 5000 });
+
   const manager = new AgentManager((record) => {
     const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
     const eventData = buildEventData(record);
@@ -494,6 +497,10 @@ export default function (pi: ExtensionAPI) {
     if (result === "pass") {
       sendIndividualNudge(record);
     }
+    const runningAfter = manager.listAgents().filter(
+      (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
+    ).length;
+    cmux.onAgentComplete(record.description, record.status, runningAfter);
     widget.update();
   }, undefined, (record) => {
     pi.events.emit("subagents:started", {
@@ -501,6 +508,10 @@ export default function (pi: ExtensionAPI) {
       type: record.type,
       description: record.description,
     });
+    const runningNow = manager.listAgents().filter(
+      (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
+    ).length;
+    cmux.onAgentStart(record.description, runningNow);
   }, (record, info) => {
     pi.events.emit("subagents:compacted", {
       id: record.id,
@@ -557,6 +568,7 @@ export default function (pi: ExtensionAPI) {
     pendingNudges.clear();
     groupJoin.dispose();
     widget.dispose();
+    cmux.dispose();
     manager.dispose();
   });
 
@@ -573,6 +585,8 @@ export default function (pi: ExtensionAPI) {
       setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
       setGraceTurns: (n) => manager.setGraceTurns(n),
       setDefaultJoinMode,
+      setCmuxIntegration: (enabled) => cmux.updateOptions({ enabled }),
+      setCmuxLingerMs: (ms) => cmux.updateOptions({ lingerMs: ms }),
     },
     (event, payload) => pi.events.emit(event, payload),
   );
@@ -1313,15 +1327,21 @@ Guidelines:
       defaultMaxTurns: manager.getDefaultMaxTurns() ?? 0,
       graceTurns: manager.getGraceTurns(),
       defaultJoinMode: getDefaultJoinMode(),
+      cmuxIntegration: cmux.active,
     };
   }
 
   async function showSettings(ctx: ExtensionCommandContext) {
+    const cmuxAvail = isCmuxAvailable();
+    const cmuxLabel = cmuxAvail
+      ? `cmux integration (current: ${cmux.active ? "on" : "off"})`
+      : `cmux integration (unavailable — CMUX_WORKSPACE_ID not set)`;
     const choice = await ctx.ui.select("Settings", [
       `Max concurrency (current: ${manager.getMaxConcurrent()})`,
       `Default max turns (current: ${manager.getDefaultMaxTurns() ?? "unlimited"})`,
       `Grace turns (current: ${manager.getGraceTurns()})`,
       `Join mode (current: ${getDefaultJoinMode()})`,
+      cmuxLabel,
     ]);
     if (!choice) return;
 
@@ -1337,6 +1357,10 @@ Guidelines:
     } else if (choice.startsWith("Join mode")) {
       const val = await ctx.ui.select("Default join mode", ["smart — auto-group 2+ agents in same turn", "async — always notify individually", "group — always group background agents"]);
       if (val) { const mode = val.split(" ")[0] as JoinMode; setDefaultJoinMode(mode); notifyApplied(ctx, `Default join mode set to ${mode}`); }
+    } else if (choice.startsWith("cmux")) {
+      if (!cmuxAvail) { ctx.ui.notify("cmux is not available (CMUX_WORKSPACE_ID not set).", "warning"); return; }
+      const val = await ctx.ui.select("cmux sidebar integration", ["Enable", "Disable"]);
+      if (val) { cmux.updateOptions({ enabled: val === "Enable" }); notifyApplied(ctx, `cmux integration ${val === "Enable" ? "enabled" : "disabled"}`); }
     }
   }
 

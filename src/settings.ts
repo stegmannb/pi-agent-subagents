@@ -12,6 +12,8 @@ export interface SubagentsSettings {
   defaultMaxTurns?: number;
   graceTurns?: number;
   defaultJoinMode?: JoinMode;
+  cmuxIntegration?: boolean;
+  cmuxLingerMs?: number;
 }
 
 export interface SettingsAppliers {
@@ -19,6 +21,8 @@ export interface SettingsAppliers {
   setDefaultMaxTurns: (n: number) => void;
   setGraceTurns: (n: number) => void;
   setDefaultJoinMode: (mode: JoinMode) => void;
+  setCmuxIntegration: (enabled: boolean) => void;
+  setCmuxLingerMs: (ms: number) => void;
 }
 
 export type SettingsEmit = (event: string, payload: unknown) => void;
@@ -59,6 +63,16 @@ function sanitize(raw: unknown): SubagentsSettings {
     VALID_JOIN_MODES.has(r.defaultJoinMode)
   ) {
     out.defaultJoinMode = r.defaultJoinMode as JoinMode;
+  }
+  if (typeof r.cmuxIntegration === "boolean") {
+    out.cmuxIntegration = r.cmuxIntegration;
+  }
+  if (
+    Number.isInteger(r.cmuxLingerMs) &&
+    (r.cmuxLingerMs as number) >= 0 &&
+    (r.cmuxLingerMs as number) <= 300_000
+  ) {
+    out.cmuxLingerMs = r.cmuxLingerMs as number;
   }
   return out;
 }
@@ -113,6 +127,8 @@ export function applySettings(
     appliers.setDefaultMaxTurns(s.defaultMaxTurns);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);
   if (s.defaultJoinMode) appliers.setDefaultJoinMode(s.defaultJoinMode);
+  if (typeof s.cmuxIntegration === "boolean") appliers.setCmuxIntegration(s.cmuxIntegration);
+  if (typeof s.cmuxLingerMs === "number") appliers.setCmuxLingerMs(s.cmuxLingerMs);
 }
 
 export function applyAndEmitLoaded(
