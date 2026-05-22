@@ -26,11 +26,7 @@ import { AgentManager } from "./agent-manager.ts";
 import {
   getAgentConversation,
   agentContext,
-  getDefaultMaxTurns,
-  getGraceTurns,
   normalizeMaxTurns,
-  setDefaultMaxTurns,
-  setGraceTurns,
   steerAgent,
 } from "./agent-runner.ts";
 import {
@@ -570,8 +566,8 @@ export default function (pi: ExtensionAPI) {
   applyAndEmitLoaded(
     {
       setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
-      setDefaultMaxTurns,
-      setGraceTurns,
+      setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
+      setGraceTurns: (n) => manager.setGraceTurns(n),
       setDefaultJoinMode,
     },
     (event, payload) => pi.events.emit(event, payload),
@@ -749,7 +745,7 @@ Guidelines:
       const modelName = effectiveModelId && effectiveModelId !== parentModelId
         ? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
         : undefined;
-      const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns());
+      const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? manager.getDefaultMaxTurns());
       const agentInvocation: AgentInvocation = {
         modelName, thinking, maxTurns: normalizeMaxTurns(resolvedConfig.maxTurns),
         isolated, inheritContext, runInBackground, isolation,
@@ -1310,8 +1306,8 @@ Guidelines:
   function snapshotSettings(): SubagentsSettings {
     return {
       maxConcurrent: manager.getMaxConcurrent(),
-      defaultMaxTurns: getDefaultMaxTurns() ?? 0,
-      graceTurns: getGraceTurns(),
+      defaultMaxTurns: manager.getDefaultMaxTurns() ?? 0,
+      graceTurns: manager.getGraceTurns(),
       defaultJoinMode: getDefaultJoinMode(),
     };
   }
@@ -1319,8 +1315,8 @@ Guidelines:
   async function showSettings(ctx: ExtensionCommandContext) {
     const choice = await ctx.ui.select("Settings", [
       `Max concurrency (current: ${manager.getMaxConcurrent()})`,
-      `Default max turns (current: ${getDefaultMaxTurns() ?? "unlimited"})`,
-      `Grace turns (current: ${getGraceTurns()})`,
+      `Default max turns (current: ${manager.getDefaultMaxTurns() ?? "unlimited"})`,
+      `Grace turns (current: ${manager.getGraceTurns()})`,
       `Join mode (current: ${getDefaultJoinMode()})`,
     ]);
     if (!choice) return;
@@ -1329,11 +1325,11 @@ Guidelines:
       const val = await ctx.ui.input("Max concurrent background agents", String(manager.getMaxConcurrent()));
       if (val) { const n = parseInt(val, 10); if (n >= 1) { manager.setMaxConcurrent(n); notifyApplied(ctx, `Max concurrency set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }
     } else if (choice.startsWith("Default max turns")) {
-      const val = await ctx.ui.input("Default max turns (0 = unlimited)", String(getDefaultMaxTurns() ?? 0));
-      if (val) { const n = parseInt(val, 10); if (n === 0) { setDefaultMaxTurns(undefined); notifyApplied(ctx, "Default max turns set to unlimited"); } else if (n >= 1) { setDefaultMaxTurns(n); notifyApplied(ctx, `Default max turns set to ${n}`); } else ctx.ui.notify("Must be 0 or positive integer.", "warning"); }
+      const val = await ctx.ui.input("Default max turns (0 = unlimited)", String(manager.getDefaultMaxTurns() ?? 0));
+      if (val) { const n = parseInt(val, 10); if (n === 0) { manager.setDefaultMaxTurns(undefined); notifyApplied(ctx, "Default max turns set to unlimited"); } else if (n >= 1) { manager.setDefaultMaxTurns(n); notifyApplied(ctx, `Default max turns set to ${n}`); } else ctx.ui.notify("Must be 0 or positive integer.", "warning"); }
     } else if (choice.startsWith("Grace turns")) {
-      const val = await ctx.ui.input("Grace turns after wrap-up steer", String(getGraceTurns()));
-      if (val) { const n = parseInt(val, 10); if (n >= 1) { setGraceTurns(n); notifyApplied(ctx, `Grace turns set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }
+      const val = await ctx.ui.input("Grace turns after wrap-up steer", String(manager.getGraceTurns()));
+      if (val) { const n = parseInt(val, 10); if (n >= 1) { manager.setGraceTurns(n); notifyApplied(ctx, `Grace turns set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }
     } else if (choice.startsWith("Join mode")) {
       const val = await ctx.ui.select("Default join mode", ["smart — auto-group 2+ agents in same turn", "async — always notify individually", "group — always group background agents"]);
       if (val) { const mode = val.split(" ")[0] as JoinMode; setDefaultJoinMode(mode); notifyApplied(ctx, `Default join mode set to ${mode}`); }

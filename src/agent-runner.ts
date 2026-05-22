@@ -30,25 +30,9 @@ export const agentContext = new AsyncLocalStorage<{ agentId: string }>();
 
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"];
 
-let defaultMaxTurns: number | undefined;
-let graceTurns = 5;
-
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
   if (n == null || n === 0) return undefined;
   return Math.max(1, n);
-}
-
-export function getDefaultMaxTurns(): number | undefined {
-  return defaultMaxTurns;
-}
-export function setDefaultMaxTurns(n: number | undefined): void {
-  defaultMaxTurns = normalizeMaxTurns(n);
-}
-export function getGraceTurns(): number {
-  return graceTurns;
-}
-export function setGraceTurns(n: number): void {
-  graceTurns = Math.max(1, n);
 }
 
 function resolveDefaultModel(
@@ -87,6 +71,7 @@ export interface RunOptions {
   agentId?: string;
   model?: Model<any>;
   maxTurns?: number;
+  graceTurns?: number;
   signal?: AbortSignal;
   isolated?: boolean;
   inheritContext?: boolean;
@@ -270,8 +255,9 @@ export async function runAgent(
 
   let turnCount = 0;
   const maxTurns = normalizeMaxTurns(
-    options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns,
+    options.maxTurns ?? agentConfig?.maxTurns,
   );
+  const effectiveGraceTurns = options.graceTurns ?? 5;
   let softLimitReached = false;
   let aborted = false;
 
@@ -286,7 +272,7 @@ export async function runAgent(
           session.steer(
             "You have reached your turn limit. Wrap up immediately — provide your final answer now.",
           );
-        } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+        } else if (softLimitReached && turnCount >= maxTurns + effectiveGraceTurns) {
           aborted = true;
           session.abort();
         }

@@ -10,6 +10,7 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import {
+  normalizeMaxTurns,
   resumeAgent,
   runAgent,
   type ToolActivity,
@@ -81,6 +82,8 @@ export class AgentManager {
   private maxConcurrent: number;
   private queue: { id: string; args: SpawnArgs }[] = [];
   private readyResolvers = new Map<string, () => void>();
+  private defaultMaxTurns: number | undefined = undefined;
+  private graceTurns = 5;
   private runningBackground = 0;
 
   constructor(
@@ -104,6 +107,19 @@ export class AgentManager {
 
   getMaxConcurrent(): number {
     return this.maxConcurrent;
+  }
+
+  getDefaultMaxTurns(): number | undefined {
+    return this.defaultMaxTurns;
+  }
+  setDefaultMaxTurns(n: number | undefined): void {
+    this.defaultMaxTurns = normalizeMaxTurns(n);
+  }
+  getGraceTurns(): number {
+    return this.graceTurns;
+  }
+  setGraceTurns(n: number): void {
+    this.graceTurns = Math.max(1, n);
   }
 
   spawn(
@@ -195,6 +211,7 @@ export class AgentManager {
       return runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
+      graceTurns: this.graceTurns,
       model: options.model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,
