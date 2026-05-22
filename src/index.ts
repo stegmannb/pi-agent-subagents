@@ -323,6 +323,10 @@ export default function (pi: ExtensionAPI) {
 
   // ---- Agent state ----
 
+  const agentDirsExist = () =>
+    existsSync(join(process.cwd(), ".pi", "agents")) ||
+    existsSync(join(getAgentDir(), "agents"));
+
   const reloadCustomAgents = () => {
     const userAgents = loadCustomAgents(process.cwd());
     registerAgents(userAgents);
@@ -709,7 +713,7 @@ Guidelines:
 
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
       widget.setUICtx(ctx.ui as any);
-      reloadCustomAgents();
+      if (agentDirsExist()) reloadCustomAgents();
 
       const rawType = params.subagent_type as SubagentType;
       const resolved = resolveType(rawType);
