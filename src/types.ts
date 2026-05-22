@@ -13,6 +13,12 @@ export type IsolationMode = "worktree";
 
 export type JoinMode = "async" | "group" | "smart";
 
+export interface CompletionReport {
+  summary: string;
+  status: "success" | "partial" | "failed";
+  artifacts?: string[];
+}
+
 export interface AgentConfig {
   name: string;
   displayName?: string;
@@ -86,6 +92,7 @@ export interface AgentRecord {
   invocation?: AgentInvocation;
   helpResolver?: (response: string) => void;
   helpMessage?: string;
+  completionReport?: CompletionReport;
 }
 
 export interface HelpRequestDetails {
@@ -106,6 +113,8 @@ export interface NotificationDetails {
   outputFile?: string;
   error?: string;
   resultPreview: string;
+  reportStatus?: "success" | "partial" | "failed";
+  artifacts?: string[];
   others?: NotificationDetails[];
 }
 

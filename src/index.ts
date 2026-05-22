@@ -54,6 +54,7 @@ import type {
   AgentInvocation,
   AgentRecord,
   JoinMode,
+  CompletionReport,
   HelpRequestDetails,
   NotificationDetails,
   SubagentType,
@@ -159,11 +160,18 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
   const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0;
   const totalTokens = getLifetimeTotal(record.lifetimeUsage);
 
-  const resultPreview = record.result
-    ? record.result.length > resultMaxLen
-      ? record.result.slice(0, resultMaxLen) + "\n...(truncated, use get_subagent_result for full output)"
-      : record.result
+  const report = record.completionReport;
+  const rawResult = report ? report.summary : record.result;
+  const resultPreview = rawResult
+    ? rawResult.length > resultMaxLen
+      ? rawResult.slice(0, resultMaxLen) + "\n...(truncated, use get_subagent_result for full output)"
+      : rawResult
     : "No output.";
+
+  const reportStatusLine = report ? `<report_status>${report.status}</report_status>` : null;
+  const artifactsLine = report?.artifacts?.length
+    ? `<artifacts>${report.artifacts.map(escapeXml).join(", ")}</artifacts>`
+    : null;
 
   return [
     `<task-notification>`,
@@ -171,8 +179,10 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
     record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
     record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
     `<status>${escapeXml(status)}</status>`,
+    reportStatusLine,
     `<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
     `<result>${escapeXml(resultPreview)}</result>`,
+    artifactsLine,
     `<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses><duration_ms>${durationMs}</duration_ms></usage>`,
     `</task-notification>`,
   ].filter(Boolean).join("\n");
@@ -200,6 +210,8 @@ function buildDetails(
 
 function buildNotificationDetails(record: AgentRecord, resultMaxLen: number, activity?: AgentActivity): NotificationDetails {
   const totalTokens = getLifetimeTotal(record.lifetimeUsage);
+  const report = record.completionReport;
+  const rawResult = report ? report.summary : record.result;
   return {
     id: record.id,
     description: record.description,
@@ -211,10 +223,12 @@ function buildNotificationDetails(record: AgentRecord, resultMaxLen: number, act
     durationMs: record.completedAt ? record.completedAt - record.startedAt : 0,
     outputFile: record.outputFile,
     error: record.error,
-    resultPreview: record.result
-      ? record.result.length > resultMaxLen
-        ? record.result.slice(0, resultMaxLen) + "…"
-        : record.result
+    reportStatus: report?.status,
+    artifacts: report?.artifacts,
+    resultPreview: rawResult
+      ? rawResult.length > resultMaxLen
+        ? rawResult.slice(0, resultMaxLen) + "…"
+        : rawResult
       : "No output.",
   };
 }
@@ -236,8 +250,26 @@ export default function (pi: ExtensionAPI) {
 
       function renderOne(d: NotificationDetails): string {
         const isError = d.status === "error" || d.status === "stopped" || d.status === "aborted";
-        const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-        const statusText = isError ? d.status : d.status === "steered" ? "completed (steered)" : "completed";
+
+        // reportStatus overrides the completion icon when present
+        let icon: string;
+        let statusText: string;
+        if (d.reportStatus === "success") {
+          icon = theme.fg("success", "✓");
+          statusText = "success";
+        } else if (d.reportStatus === "partial") {
+          icon = theme.fg("warning", "✓");
+          statusText = theme.fg("warning", "partial");
+        } else if (d.reportStatus === "failed") {
+          icon = theme.fg("error", "✗");
+          statusText = theme.fg("error", "failed");
+        } else if (isError) {
+          icon = theme.fg("error", "✗");
+          statusText = d.status;
+        } else {
+          icon = theme.fg("success", "✓");
+          statusText = d.status === "steered" ? "completed (steered)" : "completed";
+        }
 
         let line = `${icon} ${theme.bold(d.description)} ${theme.fg("dim", statusText)}`;
 
@@ -253,6 +285,9 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           const lines = d.resultPreview.split("\n").slice(0, 30);
           for (const l of lines) line += "\n" + theme.fg("dim", `  ${l}`);
+          if (d.artifacts?.length) {
+            line += "\n  " + theme.fg("dim", `artifacts: ${d.artifacts.join(", ")}`);
+          }
         } else {
           const preview = d.resultPreview.split("\n")[0]?.slice(0, 80) ?? "";
           line += "\n  " + theme.fg("dim", `⎿  ${preview}`);
@@ -892,7 +927,13 @@ Guidelines:
       } else if (record.status === "error") {
         output += `Error: ${record.error}`;
       } else {
-        output += record.result?.trim() || "No output.";
+        if (record.completionReport) {
+          const r = record.completionReport;
+          output += `Status: ${r.status}\n${r.summary}`;
+          if (r.artifacts?.length) output += `\n\nArtifacts:\n${r.artifacts.map(a => `- ${a}`).join("\n")}`;
+        } else {
+          output += record.result?.trim() || "No output.";
+        }
       }
 
       if (record.status !== "running" && record.status !== "queued" && record.status !== "waiting") {
@@ -906,6 +947,38 @@ Guidelines:
       }
 
       return textResult(output);
+    },
+  }));
+
+  // ---- report_complete tool ----
+
+  pi.registerTool(defineTool({
+    name: "report_complete",
+    label: "Report Complete",
+    description: "Report task completion with a structured summary. Call this when your task is done.",
+    parameters: Type.Object({
+      summary: Type.String({ description: "Concise summary of what was accomplished." }),
+      status: Type.Union([
+        Type.Literal("success"),
+        Type.Literal("partial"),
+        Type.Literal("failed"),
+      ], { description: "success: fully completed; partial: some work done but incomplete; failed: could not complete the task." }),
+      artifacts: Type.Optional(Type.Array(Type.String(), { description: "Files created or modified (paths or descriptions)." })),
+    }),
+    execute: async (_toolCallId, params, _signal) => {
+      const ctx = agentContext.getStore();
+      if (!ctx?.agentId) return textResult("Error: report_complete called outside of a subagent context.");
+
+      const record = manager.getRecord(ctx.agentId);
+      if (!record) return textResult("Error: agent record not found.");
+
+      record.completionReport = {
+        summary: params.summary,
+        status: params.status as CompletionReport["status"],
+        artifacts: params.artifacts,
+      };
+
+      return textResult("Report recorded.");
     },
   }));
 

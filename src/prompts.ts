@@ -30,6 +30,8 @@ You are operating as a sub-agent invoked to handle a specific task.
 - Make independent tool calls in parallel
 - Use absolute file paths
 - Be concise but complete
+- When your task is complete, call report_complete with a summary, status (success/partial/failed), and any artifacts created
+- If you get stuck and need input from the parent, call request_help
 </sub_agent_context>`;
 
     const customSection = config.systemPrompt?.trim()
