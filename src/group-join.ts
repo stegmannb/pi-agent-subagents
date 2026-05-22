@@ -7,6 +7,7 @@ import type { AgentRecord } from "./types.ts";
 export type DeliveryCallback = (
   records: AgentRecord[],
   partial: boolean,
+  isStraggler: boolean,
 ) => void;
 
 interface AgentGroup {
@@ -83,7 +84,7 @@ export class GroupJoinManager {
       this.agentToGroup.delete(id);
     }
 
-    this.deliverCb([...group.completedRecords.values()], true);
+    this.deliverCb([...group.completedRecords.values()], true, false);
 
     group.completedRecords.clear();
     group.agentIds = remaining;
@@ -96,7 +97,7 @@ export class GroupJoinManager {
       group.timeoutHandle = undefined;
     }
     group.delivered = true;
-    this.deliverCb([...group.completedRecords.values()], partial);
+    this.deliverCb([...group.completedRecords.values()], partial, group.isStraggler);
     this.cleanupGroup(group.groupId);
   }
 

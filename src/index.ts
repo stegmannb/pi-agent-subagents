@@ -377,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 
   // ---- Group join ----
   const groupJoin = new GroupJoinManager(
-    (records, partial) => {
+    (records, partial, isStraggler) => {
       for (const r of records) { agentActivity.delete(r.id); widget.markFinished(r.id); }
 
       const groupKey = `group:${records.map(r => r.id).join(",")}`;
@@ -386,9 +386,11 @@ export default function (pi: ExtensionAPI) {
         if (unconsumed.length === 0) { widget.update(); return; }
 
         const notifications = unconsumed.map(r => formatTaskNotification(r, 300)).join("\n\n");
-        const label = partial
-          ? `${unconsumed.length} agent(s) finished (partial — others still running)`
-          : `${unconsumed.length} agent(s) finished`;
+        const label = isStraggler
+          ? `${unconsumed.length} straggler(s) finished`
+          : partial
+            ? `${unconsumed.length} agent(s) finished (partial — others still running)`
+            : `${unconsumed.length} agent(s) finished`;
 
         const [first, ...rest] = unconsumed;
         const details = buildNotificationDetails(first!, 300, agentActivity.get(first!.id));
