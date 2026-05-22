@@ -103,9 +103,9 @@ export interface AgentDetails {
 
 export function formatTokens(count: number): string {
   if (count >= 1_000_000)
-    return `${(count / 1_000_000).toFixed(1)}M token`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k token`;
-  return `${count} token`;
+    return `${(count / 1_000_000).toFixed(1)}M tokens`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k tokens`;
+  return `${count} ${count === 1 ? "token" : "tokens"}`;
 }
 
 export function formatSessionTokens(

@@ -1065,7 +1065,7 @@ Guidelines:
       if (record.status !== "running") return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}).`);
       if (!record.session) {
         if (!record.pendingSteers) record.pendingSteers = [];
-        record.pendingSteers.push(params.message);
+        if (record.pendingSteers.length < 20) record.pendingSteers.push(params.message);
         pi.events.emit("subagents:steered", { id: record.id, message: params.message });
         return textResult(`Steering message queued for agent ${record.id}.`);
       }

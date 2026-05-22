@@ -102,11 +102,10 @@ export async function cleanupWorktree(
         timeout: 5000,
       });
     }
-    worktree.branch = branchName;
 
     await removeWorktree(cwd, worktree.path);
 
-    return { hasChanges: true, branch: worktree.branch, path: worktree.path };
+    return { hasChanges: true, branch: branchName, path: worktree.path };
   } catch (err) {
     // Do NOT remove the worktree — preserve it so the user can recover their work.
     const reason = err instanceof Error ? err.message : String(err);

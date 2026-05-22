@@ -8,7 +8,7 @@ import {
   mkdirSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type {
   AgentSession,
@@ -28,10 +28,11 @@ export function createOutputFilePath(
   sessionId: string,
 ): string {
   const encoded = encodeCwd(cwd);
-  const root = join(
-    tmpdir(),
-    `pi-subagents-${process.getuid?.() ?? 0}`,
-  );
+  const uid = (() => {
+    if (process.getuid) return String(process.getuid());
+    try { return userInfo().username; } catch { return "user"; }
+  })();
+  const root = join(tmpdir(), `pi-subagents-${uid}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   try {
     chmodSync(root, 0o700);
