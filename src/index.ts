@@ -1413,8 +1413,40 @@ Guidelines:
         { description: "plan" },
       );
       if (isCancelled(planRecord)) { report("Plan workflow cancelled.", "warning"); return; }
-      const planResult = getRecordOutput(planRecord);
-      const tasks = parseNumberedTasks(planResult);
+      let planResult = getRecordOutput(planRecord);
+      let tasks = parseNumberedTasks(planResult);
+
+      // Plan approval loop
+      while (true) {
+        const preview = planResult.length > 600 ? planResult.slice(0, 600) + "\u2026" : planResult;
+        const choice = await ctx.ui.select(
+          `Plan (${tasks.length} task${tasks.length === 1 ? "" : "s"}):\n\n${preview}`,
+          ["Proceed with plan", "Request changes", "Cancel"],
+        );
+
+        if (!choice || choice.startsWith("Cancel")) {
+          report("Plan workflow cancelled.", "warning");
+          return;
+        }
+        if (choice.startsWith("Proceed")) break;
+
+        // Request changes
+        const feedback = await ctx.ui.input("What should be changed in the plan?");
+        if (!feedback) continue;
+
+        report("\u23F3 Revising plan\u2026");
+        const revisedRecord = await manager.spawnAndWait(pi, spawnCtx, "Plan",
+          `Revise the following implementation plan based on feedback.\n\n## Original Task\n${task}\n\n## Current Plan\n${planResult}\n\n## Requested Changes\n${feedback}\n\nOutput the revised numbered task list under "## Implementation Tasks". Call report_complete with the full revised plan as the summary.`,
+          { description: "plan (revision)" },
+        );
+        if (isCancelled(revisedRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+        planResult = getRecordOutput(revisedRecord);
+        tasks = parseNumberedTasks(planResult);
+        if (tasks.length === 0) {
+          report("Revised plan has no parseable tasks \u2014 please request changes again.", "warning");
+        }
+      }
+
       if (tasks.length === 0) {
         report("Plan produced no parseable tasks. Check agent output.", "warning");
         return;
