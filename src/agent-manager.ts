@@ -246,7 +246,7 @@ export class AgentManager {
       },
     });
     })() // end async IIFE (worktree setup + runAgent)
-      .then(({ responseText, session, aborted, steered }) => {
+      .then(async ({ responseText, session, aborted, steered }) => {
         if (record.status !== "stopped") {
           record.status = aborted
             ? "aborted"
@@ -287,7 +287,7 @@ export class AgentManager {
         }
         return responseText;
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (record.status !== "stopped") {
           record.status = "error";
         }
