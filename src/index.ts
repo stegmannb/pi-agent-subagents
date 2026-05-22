@@ -11,7 +11,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   defineTool,
   type ExtensionAPI,
@@ -1296,6 +1296,10 @@ Guidelines:
     const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
     const name = await ctx.ui.input("Agent name (filename, no spaces)");
     if (!name) return;
+    if (!/^[\w.-]+$/.test(name) || name.includes("..")) {
+      ctx.ui.notify("Invalid agent name. Use only letters, numbers, hyphens, and underscores.", "error");
+      return;
+    }
     const description = await ctx.ui.input("Description (one line)");
     if (!description) return;
     const toolChoice = await ctx.ui.select("Tools", ["all", "none", "read-only (read, bash, grep, find, ls)", "custom..."]);
@@ -1312,6 +1316,10 @@ Guidelines:
     const content = `---\ndescription: ${description}\ntools: ${tools}\nprompt_mode: replace\n---\n\n${systemPrompt}\n`;
     mkdirSync(targetDir, { recursive: true });
     const targetPath = join(targetDir, `${name}.md`);
+    if (!resolve(targetPath).startsWith(resolve(targetDir) + "/")) {
+      ctx.ui.notify("Invalid agent name.", "error");
+      return;
+    }
     if (existsSync(targetPath)) {
       if (!await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)) return;
     }
