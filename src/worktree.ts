@@ -2,11 +2,14 @@
  * worktree.ts — Git worktree isolation for agents.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export interface WorktreeInfo {
   path: string;
@@ -21,19 +24,17 @@ export interface WorktreeCleanupResult {
   worktreeError?: string;
 }
 
-export function createWorktree(
+export async function createWorktree(
   cwd: string,
   agentId: string,
-): WorktreeInfo | undefined {
+): Promise<WorktreeInfo | undefined> {
   try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
       cwd,
-      stdio: "pipe",
       timeout: 5000,
     });
-    execFileSync("git", ["rev-parse", "HEAD"], {
+    await execFileAsync("git", ["rev-parse", "HEAD"], {
       cwd,
-      stdio: "pipe",
       timeout: 5000,
     });
   } catch {
@@ -45,10 +46,10 @@ export function createWorktree(
   const worktreePath = join(tmpdir(), `pi-agent-${agentId}-${suffix}`);
 
   try {
-    execFileSync(
+    await execFileAsync(
       "git",
       ["worktree", "add", "--detach", worktreePath, "HEAD"],
-      { cwd, stdio: "pipe", timeout: 30000 },
+      { cwd, timeout: 30000 },
     );
     return { path: worktreePath, branch };
   } catch {
@@ -56,59 +57,54 @@ export function createWorktree(
   }
 }
 
-export function cleanupWorktree(
+export async function cleanupWorktree(
   cwd: string,
   worktree: WorktreeInfo,
   agentDescription: string,
-): WorktreeCleanupResult {
+): Promise<WorktreeCleanupResult> {
   if (!existsSync(worktree.path)) {
     return { hasChanges: false };
   }
 
   try {
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd: worktree.path,
-      stdio: "pipe",
-      timeout: 10000,
-    })
-      .toString()
-      .trim();
+    const { stdout } = await execFileAsync(
+      "git",
+      ["status", "--porcelain"],
+      { cwd: worktree.path, timeout: 10000 },
+    );
+    const status = stdout.trim();
 
     if (!status) {
-      removeWorktree(cwd, worktree.path);
+      await removeWorktree(cwd, worktree.path);
       return { hasChanges: false };
     }
 
-    execFileSync("git", ["add", "-A"], {
+    await execFileAsync("git", ["add", "-A"], {
       cwd: worktree.path,
-      stdio: "pipe",
       timeout: 10000,
     });
     const safeDesc = agentDescription.slice(0, 200);
-    execFileSync("git", ["commit", "-m", `pi-agent: ${safeDesc}`], {
+    await execFileAsync("git", ["commit", "-m", `pi-agent: ${safeDesc}`], {
       cwd: worktree.path,
-      stdio: "pipe",
       timeout: 10000,
     });
 
     let branchName = worktree.branch;
     try {
-      execFileSync("git", ["branch", branchName], {
+      await execFileAsync("git", ["branch", branchName], {
         cwd: worktree.path,
-        stdio: "pipe",
         timeout: 5000,
       });
     } catch {
       branchName = `${worktree.branch}-${Date.now()}`;
-      execFileSync("git", ["branch", branchName], {
+      await execFileAsync("git", ["branch", branchName], {
         cwd: worktree.path,
-        stdio: "pipe",
         timeout: 5000,
       });
     }
     worktree.branch = branchName;
 
-    removeWorktree(cwd, worktree.path);
+    await removeWorktree(cwd, worktree.path);
 
     return { hasChanges: true, branch: worktree.branch, path: worktree.path };
   } catch (err) {
@@ -122,18 +118,17 @@ export function cleanupWorktree(
   }
 }
 
-function removeWorktree(cwd: string, worktreePath: string): void {
+async function removeWorktree(cwd: string, worktreePath: string): Promise<void> {
   try {
-    execFileSync(
+    await execFileAsync(
       "git",
       ["worktree", "remove", "--force", worktreePath],
-      { cwd, stdio: "pipe", timeout: 10000 },
+      { cwd, timeout: 10000 },
     );
   } catch {
     try {
-      execFileSync("git", ["worktree", "prune"], {
+      await execFileAsync("git", ["worktree", "prune"], {
         cwd,
-        stdio: "pipe",
         timeout: 5000,
       });
     } catch {
@@ -142,11 +137,10 @@ function removeWorktree(cwd: string, worktreePath: string): void {
   }
 }
 
-export function pruneWorktrees(cwd: string): void {
+export async function pruneWorktrees(cwd: string): Promise<void> {
   try {
-    execFileSync("git", ["worktree", "prune"], {
+    await execFileAsync("git", ["worktree", "prune"], {
       cwd,
-      stdio: "pipe",
       timeout: 5000,
     });
   } catch {

@@ -156,18 +156,6 @@ export class AgentManager {
     record: AgentRecord,
     { pi, ctx, type, prompt, options }: SpawnArgs,
   ) {
-    let worktreeCwd: string | undefined;
-    if (options.isolation === "worktree") {
-      const wt = createWorktree(ctx.cwd, id);
-      if (!wt) {
-        throw new Error(
-          'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed.',
-        );
-      }
-      record.worktree = wt;
-      worktreeCwd = wt.path;
-    }
-
     record.status = "running";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;
@@ -192,7 +180,19 @@ export class AgentManager {
       detachParentSignal = undefined;
     };
 
-    const promise = runAgent(ctx, type, prompt, {
+    const promise = (async () => {
+      let worktreeCwd: string | undefined;
+      if (options.isolation === "worktree") {
+        const wt = await createWorktree(ctx.cwd, id);
+        if (!wt) {
+          throw new Error(
+            'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed.',
+          );
+        }
+        record.worktree = wt;
+        worktreeCwd = wt.path;
+      }
+      return runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
       model: options.model,
@@ -227,7 +227,8 @@ export class AgentManager {
         }
         options.onSessionCreated?.(session);
       },
-    })
+    });
+    })() // end async IIFE (worktree setup + runAgent)
       .then(({ responseText, session, aborted, steered }) => {
         if (record.status !== "stopped") {
           record.status = aborted
@@ -251,22 +252,11 @@ export class AgentManager {
         }
 
         if (record.worktree) {
-          const wtResult = cleanupWorktree(
+          const wtResult = await cleanupWorktree(
             ctx.cwd,
             record.worktree,
             options.description,
           );
-          record.worktreeResult = wtResult;
-          if (wtResult.hasChanges && wtResult.branch) {
-            record.result =
-              (record.result ?? "") +
-              `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
-          }
-          if (wtResult.worktreeError) {
-            record.result =
-              (record.result ?? "") +
-              `\n\n---\n⚠️ ${wtResult.worktreeError}`;
-          }
         }
 
         if (options.isBackground) {
@@ -300,7 +290,7 @@ export class AgentManager {
 
         if (record.worktree) {
           try {
-            const wtResult = cleanupWorktree(
+            const wtResult = await cleanupWorktree(
               ctx.cwd,
               record.worktree,
               options.description,
@@ -534,10 +524,6 @@ export class AgentManager {
       record.session?.dispose();
     }
     this.agents.clear();
-    try {
-      pruneWorktrees(process.cwd());
-    } catch {
-      /* ignore */
-    }
+    pruneWorktrees(process.cwd()).catch(() => { /* ignore */ });
   }
 }
