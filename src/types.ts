@@ -93,6 +93,7 @@ export interface AgentRecord {
   helpResolver?: (response: string) => void;
   helpMessage?: string;
   completionReport?: CompletionReport;
+  readyPromise?: Promise<void>;
 }
 
 export interface HelpRequestDetails {

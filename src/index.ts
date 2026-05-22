@@ -902,10 +902,14 @@ Guidelines:
       const record = manager.getRecord(params.agent_id);
       if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
 
-      if (params.wait && (record.status === "running" || record.status === "waiting") && record.promise) {
-        record.resultConsumed = true;
-        cancelNudge(params.agent_id);
-        await record.promise;
+      if (params.wait) {
+        // Queued agents have no promise yet — wait until they dequeue first
+        if (record.readyPromise) await record.readyPromise;
+        if ((record.status === "running" || record.status === "waiting") && record.promise) {
+          record.resultConsumed = true;
+          cancelNudge(params.agent_id);
+          await record.promise;
+        }
       }
 
       const displayName = getDisplayName(record.type);

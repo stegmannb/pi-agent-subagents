@@ -80,6 +80,7 @@ export class AgentManager {
   private onCompact?: OnAgentCompact;
   private maxConcurrent: number;
   private queue: { id: string; args: SpawnArgs }[] = [];
+  private readyResolvers = new Map<string, () => void>();
   private runningBackground = 0;
 
   constructor(
@@ -135,6 +136,9 @@ export class AgentManager {
       this.runningBackground >= this.maxConcurrent
     ) {
       this.queue.push({ id, args });
+      record.readyPromise = new Promise<void>((resolve) => {
+        this.readyResolvers.set(id, resolve);
+      });
       return id;
     }
 
@@ -167,6 +171,13 @@ export class AgentManager {
     record.status = "running";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;
+    // Unblock any caller waiting on readyPromise
+    const readyResolve = this.readyResolvers.get(id);
+    if (readyResolve) {
+      this.readyResolvers.delete(id);
+      record.readyPromise = undefined;
+      readyResolve();
+    }
     this.onStart?.(record);
 
     let detachParentSignal: (() => void) | undefined;
@@ -336,6 +347,8 @@ export class AgentManager {
         record.error =
           err instanceof Error ? err.message : String(err);
         record.completedAt = Date.now();
+        const readyResolve = this.readyResolvers.get(next.id);
+        if (readyResolve) { this.readyResolvers.delete(next.id); record.readyPromise = undefined; readyResolve(); }
         this.onComplete?.(record);
       }
     }
@@ -416,6 +429,8 @@ export class AgentManager {
       this.queue = this.queue.filter((q) => q.id !== id);
       record.status = "stopped";
       record.completedAt = Date.now();
+      const readyResolve = this.readyResolvers.get(id);
+      if (readyResolve) { this.readyResolvers.delete(id); record.readyPromise = undefined; readyResolve(); }
       return true;
     }
 
@@ -473,6 +488,8 @@ export class AgentManager {
       if (record) {
         record.status = "stopped";
         record.completedAt = Date.now();
+        const readyResolve = this.readyResolvers.get(queued.id);
+        if (readyResolve) { this.readyResolvers.delete(queued.id); record.readyPromise = undefined; readyResolve(); }
         count++;
       }
     }
