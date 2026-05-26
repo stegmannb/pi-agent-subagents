@@ -38,8 +38,8 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/subagents"
-    cp -r . "$out/subagents/"
+    mkdir -p "$out"
+    cp -r . "$out/"
 
     runHook postInstall
   '';
@@ -48,9 +48,8 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out/subagents"
     echo 'export { default } from "../src/index.ts";' > "$out/subagents/index.ts"
 
-    tmp=$(mktemp)
-    jq '.pi.extensions = ["./subagents/index.ts"]' "$out/package.json" > "$tmp"
-    mv "$tmp" "$out/package.json"
+    jq '.pi.extensions = ["./subagents/index.ts"]' "$out/package.json" > "$out/package.json.tmp"
+    mv "$out/package.json.tmp" "$out/package.json"
   '';
 
   meta = {
