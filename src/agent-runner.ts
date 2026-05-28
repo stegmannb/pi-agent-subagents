@@ -25,10 +25,12 @@ import { DEFAULT_AGENTS } from "./default-agents.ts";
 import { detectEnv } from "./env.ts";
 import { buildAgentPrompt } from "./prompts.ts";
 import type { SubagentType, ThinkingLevel } from "./types.ts";
+import {
+  PARENT_AGENT_TOOL_NAMES,
+  SUBAGENT_CONTEXT_TOOL_NAMES,
+} from "./tool-constants.ts";
 
 export const agentContext = new AsyncLocalStorage<{ agentId: string }>();
-
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"];
 
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
   if (n == null || n === 0) return undefined;
@@ -221,12 +223,23 @@ export async function runAgent(
     ? new Set(agentConfig.disallowedTools)
     : undefined;
 
+  await session.bindExtensions({
+    onError: (err) => {
+      options.onToolActivity?.({
+        type: "end",
+        toolName: `extension-error:${err.extensionPath}`,
+      });
+    },
+  });
+
   if (extensions !== false) {
     const builtinToolNameSet = new Set(toolNames);
-    const activeTools = session.getActiveToolNames().filter((t) => {
-      if (EXCLUDED_TOOL_NAMES.includes(t)) return false;
+    const subagentContextToolNameSet = new Set(SUBAGENT_CONTEXT_TOOL_NAMES);
+    const activeTools = session.getAllTools().map((tool) => tool.name).filter((t) => {
+      if (PARENT_AGENT_TOOL_NAMES.includes(t)) return false;
       if (disallowedSet?.has(t)) return false;
       if (builtinToolNameSet.has(t)) return true;
+      if (subagentContextToolNameSet.has(t)) return true;
       if (Array.isArray(extensions)) {
         return extensions.some(
           (ext) => t.startsWith(ext) || t.includes(ext),
@@ -241,15 +254,6 @@ export async function runAgent(
       .filter((t) => !disallowedSet.has(t));
     session.setActiveToolsByName(activeTools);
   }
-
-  await session.bindExtensions({
-    onError: (err) => {
-      options.onToolActivity?.({
-        type: "end",
-        toolName: `extension-error:${err.extensionPath}`,
-      });
-    },
-  });
 
   options.onSessionCreated?.(session);
 

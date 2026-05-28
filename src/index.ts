@@ -46,6 +46,7 @@ import { resolveAgentInvocationConfig, resolveJoinMode, VALID_THINKING_LEVELS } 
 import { type ModelRegistry, resolveModel } from "./model-resolver.ts";
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.ts";
 import { applyAndEmitLoaded, saveAndEmitChanged, type SubagentsSettings } from "./settings.ts";
+import { SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
 import type {
   AgentConfig,
   AgentInvocation,
@@ -1037,7 +1038,7 @@ Guidelines:
 
         widget.update();
 
-        signal.addEventListener("abort", () => {
+        signal?.addEventListener("abort", () => {
           if (record.helpResolver === resolve) {
             record.helpResolver = undefined;
             record.helpMessage = undefined;
@@ -1049,6 +1050,23 @@ Guidelines:
       return textResult(`Parent responded: ${response}`);
     },
   }));
+
+  // Hide subagent-only completion/help tools from parent sessions. They remain
+  // registered so subagent sessions can enable them after binding extensions.
+  function hideSubagentContextToolsFromParent() {
+    const activeTools = pi.getActiveTools();
+    const filtered = activeTools.filter(
+      (tool) => !SUBAGENT_CONTEXT_TOOL_NAMES.includes(tool),
+    );
+    if (filtered.length !== activeTools.length) {
+      pi.setActiveTools(filtered);
+    }
+  }
+
+  hideSubagentContextToolsFromParent();
+  pi.on("session_start", async () => {
+    hideSubagentContextToolsFromParent();
+  });
 
   // ---- steer_subagent tool ----
 
