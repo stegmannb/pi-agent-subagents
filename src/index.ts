@@ -537,6 +537,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
     manager.clearCompleted();
+
+    applyAndEmitLoaded(
+      {
+        setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
+        setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
+        setGraceTurns: (n) => manager.setGraceTurns(n),
+        setDefaultJoinMode,
+        setCmuxIntegration: (enabled) => cmux.updateOptions({ enabled }),
+        setCmuxLingerMs: (ms) => cmux.updateOptions({ lingerMs: ms }),
+      },
+      (event, payload) => pi.events.emit(event, payload),
+    );
+
+    pi.events.emit("subagents:ready", {});
   });
 
   pi.on("session_before_switch", () => {
@@ -558,8 +572,6 @@ export default function (pi: ExtensionAPI) {
     if (payload?.id) manager.abort(payload.id);
   });
 
-  pi.events.emit("subagents:ready", {});
-
   pi.on("session_shutdown", async () => {
     unsubSpawn();
     unsubStop();
@@ -579,18 +591,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ---- Settings ----
-
-  applyAndEmitLoaded(
-    {
-      setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
-      setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
-      setGraceTurns: (n) => manager.setGraceTurns(n),
-      setDefaultJoinMode,
-      setCmuxIntegration: (enabled) => cmux.updateOptions({ enabled }),
-      setCmuxLingerMs: (ms) => cmux.updateOptions({ lingerMs: ms }),
-    },
-    (event, payload) => pi.events.emit(event, payload),
-  );
 
   // ---- Type list ----
 
@@ -1063,7 +1063,6 @@ Guidelines:
     }
   }
 
-  hideSubagentContextToolsFromParent();
   pi.on("session_start", async () => {
     hideSubagentContextToolsFromParent();
   });
