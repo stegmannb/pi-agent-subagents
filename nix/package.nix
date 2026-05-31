@@ -5,7 +5,6 @@
   pnpm,
   pnpmConfigHook,
   fetchPnpmDeps,
-  jq,
 }:
 let
   packageJson = builtins.fromJSON (builtins.readFile ../package.json);
@@ -26,7 +25,6 @@ stdenv.mkDerivation (finalAttrs: {
     nodejs
     pnpm
     pnpmConfigHook
-    jq
   ];
 
   prePnpmInstall = ''
@@ -38,18 +36,10 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out"
-    cp -r . "$out/"
+    mkdir -p "$out/subagents"
+    cp -r . "$out/subagents/"
 
     runHook postInstall
-  '';
-
-  postInstall = ''
-    mkdir -p "$out/subagents"
-    echo 'export { default } from "../src/index.ts";' > "$out/subagents/index.ts"
-
-    jq '.pi.extensions = ["./subagents/index.ts"]' "$out/package.json" > "$out/package.json.tmp"
-    mv "$out/package.json.tmp" "$out/package.json"
   '';
 
   meta = {
