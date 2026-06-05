@@ -36,8 +36,8 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/subagents"
-    cp -r . "$out/subagents/"
+    mkdir -p "$out"
+    cp -r . "$out/"
 
     runHook postInstall
   '';
