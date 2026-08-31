@@ -21,5 +21,6 @@
     pnpm run ci:fmt
     pnpm run ci:lint
     pnpm run ci:check
+    pnpm test
   '';
 }

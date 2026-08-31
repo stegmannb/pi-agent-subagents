@@ -22,6 +22,7 @@ import type {
   SubagentType,
   ThinkingLevel,
 } from "./types.ts";
+import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
 import {
   cleanupWorktree,
@@ -59,6 +60,7 @@ interface SpawnOptions {
   thinkingLevel?: ThinkingLevel;
   isBackground?: boolean;
   isolation?: IsolationMode;
+  cwd?: string;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
   onToolActivity?: (activity: ToolActivity) => void;
@@ -196,15 +198,11 @@ export class AgentManager {
       detachParentSignal = undefined;
     };
 
+    const sourceCwd = options.cwd ?? ctx.cwd;
     const promise = (async () => {
       let worktreeCwd: string | undefined;
       if (options.isolation === "worktree") {
-        const wt = await createWorktree(ctx.cwd, id);
-        if (!wt) {
-          throw new Error(
-            'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed.',
-          );
-        }
+        const wt = await createWorktree(sourceCwd, id);
         record.worktree = wt;
         worktreeCwd = wt.path;
       }
@@ -217,7 +215,7 @@ export class AgentManager {
       isolated: options.isolated,
       inheritContext: options.inheritContext,
       thinkingLevel: options.thinkingLevel,
-      cwd: worktreeCwd,
+      cwd: worktreeCwd ?? sourceCwd,
       signal: record.abortController!.signal,
       onToolActivity: (activity) => {
         if (activity.type === "end") record.toolUses++;
@@ -269,8 +267,8 @@ export class AgentManager {
         }
 
         if (record.worktree) {
-          const wtResult = await cleanupWorktree(
-            ctx.cwd,
+          await cleanupWorktree(
+            sourceCwd,
             record.worktree,
             options.description,
           );
@@ -308,7 +306,7 @@ export class AgentManager {
         if (record.worktree) {
           try {
             const wtResult = await cleanupWorktree(
-              ctx.cwd,
+              sourceCwd,
               record.worktree,
               options.description,
             );
@@ -326,6 +324,10 @@ export class AgentManager {
           } catch {
             /* ignore */
           }
+        }
+
+        if (record.outputFile) {
+          appendErrorEntry(record.outputFile, id, record.error, sourceCwd);
         }
 
         if (options.isBackground) {

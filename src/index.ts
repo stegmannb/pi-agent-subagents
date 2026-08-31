@@ -10,7 +10,7 @@
  *   /agents              — Interactive agent management menu
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   defineTool,
@@ -40,10 +40,11 @@ import {
   resolveType,
 } from "./agent-types.ts";
 import { loadCustomAgents } from "./custom-agents.ts";
+import { resolveAgentCwd } from "./cwd.ts";
 import { GroupJoinManager } from "./group-join.ts";
 import { CmuxReporter, isCmuxAvailable } from "./cmux.ts";
 import { resolveAgentInvocationConfig, resolveJoinMode, VALID_THINKING_LEVELS } from "./invocation-config.ts";
-import { type ModelRegistry, resolveModel } from "./model-resolver.ts";
+import { resolveModel } from "./model-resolver.ts";
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.ts";
 import { applyAndEmitLoaded, saveAndEmitChanged, type SubagentsSettings } from "./settings.ts";
 import { SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
@@ -639,6 +640,8 @@ Guidelines:
 - Use run_in_background for work you don't need immediately.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
+- Use cwd when the target repository differs from the parent session's working directory.
+- Do not use worktree isolation to review uncommitted or untracked changes; isolated worktrees start from committed HEAD.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").`,
     parameters: Type.Object({
       prompt: Type.String({ description: "The task for the agent to perform." }),
@@ -651,7 +654,8 @@ Guidelines:
       resume: Type.Optional(Type.String({ description: "Optional agent ID to resume from." })),
       isolated: Type.Optional(Type.Boolean({ description: "If true, agent gets no extension/MCP tools." })),
       inherit_context: Type.Optional(Type.Boolean({ description: "If true, fork parent conversation into the agent." })),
-      isolation: Type.Optional(Type.Literal("worktree", { description: 'Set to "worktree" to run in a temporary git worktree.' })),
+      cwd: Type.Optional(Type.String({ description: "Working directory for a new agent. Relative paths are resolved from the parent session cwd." })),
+      isolation: Type.Optional(Type.Literal("worktree", { description: 'Set to "worktree" to run in a temporary git worktree created from cwd at committed HEAD. Uncommitted and untracked changes are not included.' })),
     }),
 
     renderCall(args, theme) {
@@ -758,6 +762,16 @@ Guidelines:
       const runInBackground = resolvedConfig.runInBackground;
       const isolated = resolvedConfig.isolated;
       const isolation = resolvedConfig.isolation;
+      const agentCwd = resolveAgentCwd(ctx.cwd, params.cwd);
+      if (!params.resume) {
+        try {
+          if (!statSync(agentCwd).isDirectory()) {
+            return textResult(`Agent cwd is not a directory: ${agentCwd}`);
+          }
+        } catch {
+          return textResult(`Agent cwd does not exist or is not accessible: ${agentCwd}`);
+        }
+      }
 
       const parentModelId = ctx.model?.id;
       const effectiveModelId = model?.id;
@@ -767,7 +781,7 @@ Guidelines:
       const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? manager.getDefaultMaxTurns());
       const agentInvocation: AgentInvocation = {
         modelName, thinking, maxTurns: normalizeMaxTurns(resolvedConfig.maxTurns),
-        isolated, inheritContext, runInBackground, isolation,
+        isolated, inheritContext, runInBackground, isolation, cwd: agentCwd,
       };
       const { tags: invocationTags } = buildInvocationTags(agentInvocation);
       const modeLabel = getPromptModeLabel(subagentType);
@@ -794,7 +808,7 @@ Guidelines:
           origBgOnSession(session);
           const rec = manager.getRecord(id);
           if (rec?.outputFile) {
-            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd);
+            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, agentCwd);
           }
         };
 
@@ -802,7 +816,7 @@ Guidelines:
           id = manager.spawn(pi, ctx, subagentType, params.prompt, {
             description: params.description, model, maxTurns: effectiveMaxTurns,
             isolated, inheritContext, thinkingLevel: thinking,
-            isBackground: true, isolation, invocation: agentInvocation, ...bgCallbacks,
+            isBackground: true, isolation, cwd: agentCwd, invocation: agentInvocation, ...bgCallbacks,
           });
         } catch (err) {
           return textResult(err instanceof Error ? err.message : String(err));
@@ -813,8 +827,8 @@ Guidelines:
         if (record && joinMode) {
           record.joinMode = joinMode;
           record.toolCallId = toolCallId;
-          record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId());
-          writeInitialEntry(record.outputFile, id, params.prompt, ctx.cwd);
+          record.outputFile = createOutputFilePath(agentCwd, id, ctx.sessionManager.getSessionId());
+          writeInitialEntry(record.outputFile, id, params.prompt, agentCwd);
         }
 
         if (joinMode != null && joinMode !== "async") {
@@ -881,7 +895,7 @@ Guidelines:
       try {
         record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
           description: params.description, model, maxTurns: effectiveMaxTurns,
-          isolated, inheritContext, thinkingLevel: thinking, isolation, invocation: agentInvocation, signal, ...fgCallbacks,
+          isolated, inheritContext, thinkingLevel: thinking, isolation, cwd: agentCwd, invocation: agentInvocation, signal, ...fgCallbacks,
         });
       } catch (err) {
         clearInterval(spinnerInterval);

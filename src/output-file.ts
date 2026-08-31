@@ -61,6 +61,27 @@ export function writeInitialEntry(
   writeFileSync(path, JSON.stringify(entry) + "\n", "utf-8");
 }
 
+export function appendErrorEntry(
+  path: string,
+  agentId: string,
+  error: string,
+  cwd: string,
+): void {
+  const entry = {
+    isSidechain: true,
+    agentId,
+    type: "error",
+    error,
+    timestamp: new Date().toISOString(),
+    cwd,
+  };
+  try {
+    appendFileSync(path, JSON.stringify(entry) + "\n", "utf-8");
+  } catch {
+    /* ignore transcript write failures */
+  }
+}
+
 export function streamToOutputFile(
   session: AgentSession,
   path: string,

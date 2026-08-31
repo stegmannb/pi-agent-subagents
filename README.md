@@ -40,9 +40,14 @@ Agent(
   prompt: "Refactor the auth module to use the new token format",
   description: "auth refactor",
   subagent_type: "general-purpose",
+  cwd: "/path/to/repository",
   run_in_background: true
 )
 ```
+
+`cwd` is optional. Relative paths are resolved from the parent pi session's working directory. Use it when pi was started from a workspace containing multiple repositories.
+
+Set `isolation: "worktree"` when an agent should work from committed `HEAD` in a temporary Git worktree. Worktree isolation intentionally excludes uncommitted and untracked changes, so do not use it to review existing local changes.
 
 Run `/agents` in the pi TUI to browse agent types, manage running agents, and adjust settings (concurrency, max turns, join mode).
 

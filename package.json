@@ -29,6 +29,7 @@
     "fmt": "oxfmt src/ index.ts",
     "lint": "oxlint src/ index.ts",
     "check": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
     "ci:fmt": "oxfmt --check src/ index.ts",
     "ci:lint": "pnpm run lint",
     "ci:check": "pnpm run check"

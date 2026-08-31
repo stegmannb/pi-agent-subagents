@@ -49,6 +49,7 @@ export interface AgentInvocation {
   inheritContext?: boolean;
   runInBackground?: boolean;
   isolation?: IsolationMode;
+  cwd?: string;
 }
 
 export type LifetimeUsage = {
