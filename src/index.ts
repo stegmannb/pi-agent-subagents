@@ -632,6 +632,7 @@ Available agent types:
 ${typeListText}
 
 Guidelines:
+- Only spawn a subagent for complex, multi-step work that benefits from a separate context. Do not spawn one for a short action you can do yourself (append a note, record a memory, run one command, read a file).
 - For parallel work, use run_in_background: true on each agent.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
@@ -640,8 +641,10 @@ Guidelines:
 - Use run_in_background for work you don't need immediately.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
-- Use cwd when the target repository differs from the parent session's working directory.
-- Do not use worktree isolation to review uncommitted or untracked changes; isolated worktrees start from committed HEAD.
+- Set cwd to the git repository the agent should work in whenever the parent session cwd is a workspace, a parent folder, or otherwise not that repository. Workspace folders with nested repos are common.
+- Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
+- Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD.
+- Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").`,
     parameters: Type.Object({
       prompt: Type.String({ description: "The task for the agent to perform." }),
@@ -654,8 +657,8 @@ Guidelines:
       resume: Type.Optional(Type.String({ description: "Optional agent ID to resume from." })),
       isolated: Type.Optional(Type.Boolean({ description: "If true, agent gets no extension/MCP tools." })),
       inherit_context: Type.Optional(Type.Boolean({ description: "If true, fork parent conversation into the agent." })),
-      cwd: Type.Optional(Type.String({ description: "Working directory for a new agent. Relative paths are resolved from the parent session cwd." })),
-      isolation: Type.Optional(Type.Literal("worktree", { description: 'Set to "worktree" to run in a temporary git worktree created from cwd at committed HEAD. Uncommitted and untracked changes are not included.' })),
+      cwd: Type.Optional(Type.String({ description: "Git repository the agent should run in. Relative paths resolve from the parent session cwd. Set this whenever the session cwd is not that repository (nested repos, workspace folders). Required for isolation: worktree." })),
+      isolation: Type.Optional(Type.Literal("worktree", { description: 'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a temporary worktree from HEAD. Omit only if cwd is not a git repo, has no commits, or the agent must see uncommitted/untracked files.' })),
     }),
 
     renderCall(args, theme) {

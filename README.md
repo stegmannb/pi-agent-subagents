@@ -41,13 +41,14 @@ Agent(
   description: "auth refactor",
   subagent_type: "general-purpose",
   cwd: "/path/to/repository",
+  isolation: "worktree",
   run_in_background: true
 )
 ```
 
-`cwd` is optional. Relative paths are resolved from the parent pi session's working directory. Use it when pi was started from a workspace containing multiple repositories.
+Set `cwd` to the git repository the agent should work in whenever the parent session was started from a workspace or another folder. Relative paths resolve from the parent session cwd.
 
-Set `isolation: "worktree"` when an agent should work from committed `HEAD` in a temporary Git worktree. Worktree isolation intentionally excludes uncommitted and untracked changes, so do not use it to review existing local changes.
+Use `isolation: "worktree"` whenever that `cwd` is a git repository with at least one commit. It creates a temporary worktree from committed `HEAD`. Omit isolation only when that is not possible (not a git repo, no commits) or the agent must see uncommitted/untracked files in the live working tree. Invalid isolation requests fail.
 
 Run `/agents` in the pi TUI to browse agent types, manage running agents, and adjust settings (concurrency, max turns, join mode).
 
