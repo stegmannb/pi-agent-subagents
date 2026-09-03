@@ -55,6 +55,7 @@ interface SpawnOptions {
   description: string;
   model?: Model<any>;
   maxTurns?: number;
+  timeoutSeconds?: number;
   isolated?: boolean;
   inheritContext?: boolean;
   thinkingLevel?: ThinkingLevel;
@@ -85,6 +86,7 @@ export class AgentManager {
   private queue: { id: string; args: SpawnArgs }[] = [];
   private readyResolvers = new Map<string, () => void>();
   private defaultMaxTurns: number | undefined = undefined;
+  private defaultTimeoutSeconds: number | undefined = undefined;
   private graceTurns = 5;
   private runningBackground = 0;
 
@@ -116,6 +118,12 @@ export class AgentManager {
   }
   setDefaultMaxTurns(n: number | undefined): void {
     this.defaultMaxTurns = normalizeMaxTurns(n);
+  }
+  getDefaultTimeoutSeconds(): number | undefined {
+    return this.defaultTimeoutSeconds;
+  }
+  setDefaultTimeoutSeconds(n: number | undefined): void {
+    this.defaultTimeoutSeconds = n == null || n <= 0 ? undefined : n;
   }
   getGraceTurns(): number {
     return this.graceTurns;
@@ -212,6 +220,7 @@ export class AgentManager {
       graceTurns: this.graceTurns,
       model: options.model,
       maxTurns: options.maxTurns,
+      timeoutSeconds: options.timeoutSeconds,
       isolated: options.isolated,
       inheritContext: options.inheritContext,
       thinkingLevel: options.thinkingLevel,
@@ -244,7 +253,7 @@ export class AgentManager {
       },
     });
     })() // end async IIFE (worktree setup + runAgent)
-      .then(async ({ responseText, session, aborted, steered }) => {
+      .then(async ({ responseText, session, aborted, steered, timedOut }) => {
         if (record.status !== "stopped") {
           record.status = aborted
             ? "aborted"
@@ -252,6 +261,7 @@ export class AgentManager {
               ? "steered"
               : "completed";
         }
+        record.timedOut = timedOut;
         record.result = responseText;
         record.session = session;
         record.completedAt ??= Date.now();

@@ -131,19 +131,19 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
   return { state, callbacks };
 }
 
-function getStatusLabel(status: string, error?: string): string {
+function getStatusLabel(status: string, error?: string, timedOut?: boolean): string {
   switch (status) {
     case "error": return `Error: ${error ?? "unknown"}`;
-    case "aborted": return "Aborted (max turns exceeded)";
+    case "aborted": return timedOut ? "Aborted (timeout exceeded)" : "Aborted (max turns exceeded)";
     case "steered": return "Wrapped up (turn limit)";
     case "stopped": return "Stopped";
     default: return "Done";
   }
 }
 
-function getStatusNote(status: string): string {
+function getStatusNote(status: string, timedOut?: boolean): string {
   switch (status) {
-    case "aborted": return " (aborted — max turns exceeded, output may be incomplete)";
+    case "aborted": return timedOut ? " (aborted — timeout exceeded, output may be incomplete)" : " (aborted — max turns exceeded, output may be incomplete)";
     case "steered": return " (wrapped up — reached turn limit)";
     case "stopped": return " (stopped by user)";
     default: return "";
@@ -155,7 +155,7 @@ function escapeXml(s: string): string {
 }
 
 function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
-  const status = getStatusLabel(record.status, record.error);
+  const status = getStatusLabel(record.status, record.error, record.timedOut);
   const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0;
   const totalTokens = getLifetimeTotal(record.lifetimeUsage);
 
@@ -189,7 +189,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 
 function buildDetails(
   base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
-  record: { toolUses: number; startedAt: number; completedAt?: number; status: string; error?: string; id?: string; session?: any; lifetimeUsage: { input: number; output: number; cacheWrite: number } },
+  record: { toolUses: number; startedAt: number; completedAt?: number; status: string; error?: string; id?: string; session?: any; timedOut?: boolean; lifetimeUsage: { input: number; output: number; cacheWrite: number } },
   activity?: AgentActivity,
   overrides?: Partial<AgentDetails>,
 ): AgentDetails {
@@ -203,6 +203,7 @@ function buildDetails(
     status: record.status as AgentDetails["status"],
     agentId: record.id,
     error: record.error,
+    timedOut: record.timedOut,
     ...overrides,
   };
 }
@@ -543,6 +544,7 @@ export default function (pi: ExtensionAPI) {
       {
         setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
         setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
+        setDefaultTimeoutSeconds: (n) => manager.setDefaultTimeoutSeconds(n),
         setGraceTurns: (n) => manager.setGraceTurns(n),
         setDefaultJoinMode,
         setCmuxIntegration: (enabled) => cmux.updateOptions({ enabled }),
@@ -645,7 +647,8 @@ Guidelines:
 - Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
 - Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD.
 - Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
-- Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").`,
+- Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
+- Use timeout_seconds to bound wall-clock runtime for agents that might hang or run too long; the agent is aborted once the limit is reached, independent of turn count.`,
     parameters: Type.Object({
       prompt: Type.String({ description: "The task for the agent to perform." }),
       description: Type.String({ description: "A short (3-5 word) description of the task (shown in UI)." }),
@@ -653,6 +656,7 @@ Guidelines:
       model: Type.Optional(Type.String({ description: 'Optional model override. Accepts "provider/modelId" or fuzzy name (e.g. "haiku", "sonnet").' })),
       thinking: Type.Optional(Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh." })),
       max_turns: Type.Optional(Type.Number({ description: "Maximum agentic turns before stopping.", minimum: 1 })),
+      timeout_seconds: Type.Optional(Type.Number({ description: "Wall-clock timeout in seconds; the agent is aborted if it runs longer than this, regardless of turn count.", minimum: 1 })),
       run_in_background: Type.Optional(Type.Boolean({ description: "Set to true to run in background." })),
       resume: Type.Optional(Type.String({ description: "Optional agent ID to resume from." })),
       isolated: Type.Optional(Type.Boolean({ description: "If true, agent gets no extension/MCP tools." })),
@@ -728,7 +732,7 @@ Guidelines:
       if (details.status === "error") {
         line += "\n" + theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`);
       } else {
-        line += "\n" + theme.fg("warning", "  ⎿  Aborted (max turns exceeded)");
+        line += "\n" + theme.fg("warning", `  ⎿  ${details.timedOut ? "Aborted (timeout exceeded)" : "Aborted (max turns exceeded)"}`);
       }
       return new Text(line, 0, 0);
     },
@@ -782,8 +786,10 @@ Guidelines:
         ? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
         : undefined;
       const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? manager.getDefaultMaxTurns());
+      const effectiveTimeoutSeconds = resolvedConfig.timeoutSeconds ?? manager.getDefaultTimeoutSeconds();
       const agentInvocation: AgentInvocation = {
         modelName, thinking, maxTurns: normalizeMaxTurns(resolvedConfig.maxTurns),
+        timeoutSeconds: effectiveTimeoutSeconds,
         isolated, inheritContext, runInBackground, isolation, cwd: agentCwd,
       };
       const { tags: invocationTags } = buildInvocationTags(agentInvocation);
@@ -817,7 +823,7 @@ Guidelines:
 
         try {
           id = manager.spawn(pi, ctx, subagentType, params.prompt, {
-            description: params.description, model, maxTurns: effectiveMaxTurns,
+            description: params.description, model, maxTurns: effectiveMaxTurns, timeoutSeconds: effectiveTimeoutSeconds,
             isolated, inheritContext, thinkingLevel: thinking,
             isBackground: true, isolation, cwd: agentCwd, invocation: agentInvocation, ...bgCallbacks,
           });
@@ -897,7 +903,7 @@ Guidelines:
       let record: AgentRecord;
       try {
         record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
-          description: params.description, model, maxTurns: effectiveMaxTurns,
+          description: params.description, model, maxTurns: effectiveMaxTurns, timeoutSeconds: effectiveTimeoutSeconds,
           isolated, inheritContext, thinkingLevel: thinking, isolation, cwd: agentCwd, invocation: agentInvocation, signal, ...fgCallbacks,
         });
       } catch (err) {
@@ -920,7 +926,7 @@ Guidelines:
       const statsParts = [`${record.toolUses} tool uses`];
       if (tokenText) statsParts.push(tokenText);
       return textResult(
-        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n${record.result?.trim() || "No output."}`,
+        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.timedOut)}.\n\n${record.result?.trim() || "No output."}`,
         details,
       );
     },
@@ -1268,6 +1274,7 @@ Guidelines:
     if (cfg.model) fmFields.push(`model: ${yamlStr(cfg.model)}`);
     if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
     if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
+    if (cfg.timeoutSeconds) fmFields.push(`timeout_seconds: ${cfg.timeoutSeconds}`);
     fmFields.push(`prompt_mode: ${cfg.promptMode}`);
     if (cfg.extensions === false) fmFields.push("extensions: false");
     else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
@@ -1367,6 +1374,7 @@ Guidelines:
     return {
       maxConcurrent: manager.getMaxConcurrent(),
       defaultMaxTurns: manager.getDefaultMaxTurns() ?? 0,
+      defaultTimeoutSeconds: manager.getDefaultTimeoutSeconds() ?? 0,
       graceTurns: manager.getGraceTurns(),
       defaultJoinMode: getDefaultJoinMode(),
       cmuxIntegration: cmux.active,
@@ -1381,6 +1389,7 @@ Guidelines:
     const choice = await ctx.ui.select("Settings", [
       `Max concurrency (current: ${manager.getMaxConcurrent()})`,
       `Default max turns (current: ${manager.getDefaultMaxTurns() ?? "unlimited"})`,
+      `Default timeout (current: ${manager.getDefaultTimeoutSeconds() != null ? manager.getDefaultTimeoutSeconds() + "s" : "unlimited"})`,
       `Grace turns (current: ${manager.getGraceTurns()})`,
       `Join mode (current: ${getDefaultJoinMode()})`,
       cmuxLabel,
@@ -1393,6 +1402,9 @@ Guidelines:
     } else if (choice.startsWith("Default max turns")) {
       const val = await ctx.ui.input("Default max turns (0 = unlimited)", String(manager.getDefaultMaxTurns() ?? 0));
       if (val) { const n = parseInt(val, 10); if (n === 0) { manager.setDefaultMaxTurns(undefined); notifyApplied(ctx, "Default max turns set to unlimited"); } else if (n >= 1) { manager.setDefaultMaxTurns(n); notifyApplied(ctx, `Default max turns set to ${n}`); } else ctx.ui.notify("Must be 0 or positive integer.", "warning"); }
+    } else if (choice.startsWith("Default timeout")) {
+      const val = await ctx.ui.input("Default timeout in seconds (0 = unlimited)", String(manager.getDefaultTimeoutSeconds() ?? 0));
+      if (val) { const n = parseInt(val, 10); if (n === 0) { manager.setDefaultTimeoutSeconds(undefined); notifyApplied(ctx, "Default timeout set to unlimited"); } else if (n >= 1) { manager.setDefaultTimeoutSeconds(n); notifyApplied(ctx, `Default timeout set to ${n}s`); } else ctx.ui.notify("Must be 0 or positive integer.", "warning"); }
     } else if (choice.startsWith("Grace turns")) {
       const val = await ctx.ui.input("Grace turns after wrap-up steer", String(manager.getGraceTurns()));
       if (val) { const n = parseInt(val, 10); if (n >= 1) { manager.setGraceTurns(n); notifyApplied(ctx, `Grace turns set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }

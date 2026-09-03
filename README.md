@@ -61,10 +61,14 @@ Create a markdown file with frontmatter to define a custom agent:
 description: My specialist agent
 tools: read, bash, grep, find, ls
 prompt_mode: replace
+max_turns: 40
+timeout_seconds: 600
 ---
 
 Your system prompt here.
 ```
+
+`max_turns` bounds the number of agentic turns; `timeout_seconds` bounds wall-clock runtime regardless of turn count — the agent is aborted once either limit is hit. Both can also be passed as tool parameters (`max_turns`, `timeout_seconds`) or set as defaults via `/agents` settings.
 
 ## Requirements
 

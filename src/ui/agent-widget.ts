@@ -99,6 +99,7 @@ export interface AgentDetails {
   maxTurns?: number;
   agentId?: string;
   error?: string;
+  timedOut?: boolean;
 }
 
 export function formatTokens(count: number): string {
@@ -172,6 +173,8 @@ export function buildInvocationTags(
   if (invocation.runInBackground) tags.push("background");
   if (invocation.maxTurns != null)
     tags.push(`max turns: ${invocation.maxTurns}`);
+  if (invocation.timeoutSeconds != null)
+    tags.push(`timeout: ${invocation.timeoutSeconds}s`);
   return { modelName: invocation.modelName, tags };
 }
 
@@ -277,6 +280,7 @@ export class AgentWidget {
       startedAt: number;
       completedAt?: number;
       error?: string;
+      timedOut?: boolean;
     },
     theme: Theme,
   ): string {
@@ -300,7 +304,7 @@ export class AgentWidget {
       statusText = theme.fg("error", ` error${errMsg}`);
     } else {
       icon = theme.fg("error", "✗");
-      statusText = theme.fg("warning", " aborted");
+      statusText = theme.fg("warning", a.timedOut ? " aborted (timeout)" : " aborted");
     }
 
     const parts: string[] = [];

@@ -74,6 +74,7 @@ export interface RunOptions {
   model?: Model<any>;
   maxTurns?: number;
   graceTurns?: number;
+  timeoutSeconds?: number;
   signal?: AbortSignal;
   isolated?: boolean;
   inheritContext?: boolean;
@@ -99,6 +100,7 @@ export interface RunResult {
   session: AgentSession;
   aborted: boolean;
   steered: boolean;
+  timedOut: boolean;
 }
 
 function collectResponseText(session: AgentSession) {
@@ -264,6 +266,17 @@ export async function runAgent(
   const effectiveGraceTurns = options.graceTurns ?? 5;
   let softLimitReached = false;
   let aborted = false;
+  let timedOut = false;
+
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  if (options.timeoutSeconds != null && options.timeoutSeconds > 0) {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      aborted = true;
+      session.abort();
+    }, options.timeoutSeconds * 1000);
+    timeoutTimer.unref?.();
+  }
 
   let currentMessageText = "";
   const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
@@ -336,11 +349,12 @@ export async function runAgent(
     unsubTurns();
     collector.unsubscribe();
     cleanupAbort();
+    if (timeoutTimer) clearTimeout(timeoutTimer);
   }
 
   const responseText =
     collector.getText().trim() || getLastAssistantText(session);
-  return { responseText, session, aborted, steered: softLimitReached };
+  return { responseText, session, aborted, steered: softLimitReached && !timedOut, timedOut };
 }
 
 export async function resumeAgent(

@@ -10,6 +10,7 @@ import type { JoinMode } from "./types.ts";
 export interface SubagentsSettings {
   maxConcurrent?: number;
   defaultMaxTurns?: number;
+  defaultTimeoutSeconds?: number;
   graceTurns?: number;
   defaultJoinMode?: JoinMode;
   cmuxIntegration?: boolean;
@@ -19,6 +20,7 @@ export interface SubagentsSettings {
 export interface SettingsAppliers {
   setMaxConcurrent: (n: number) => void;
   setDefaultMaxTurns: (n: number) => void;
+  setDefaultTimeoutSeconds: (n: number) => void;
   setGraceTurns: (n: number) => void;
   setDefaultJoinMode: (mode: JoinMode) => void;
   setCmuxIntegration: (enabled: boolean) => void;
@@ -50,6 +52,13 @@ function sanitize(raw: unknown): SubagentsSettings {
     (r.defaultMaxTurns as number) <= 10_000
   ) {
     out.defaultMaxTurns = r.defaultMaxTurns as number;
+  }
+  if (
+    Number.isInteger(r.defaultTimeoutSeconds) &&
+    (r.defaultTimeoutSeconds as number) >= 0 &&
+    (r.defaultTimeoutSeconds as number) <= 86_400
+  ) {
+    out.defaultTimeoutSeconds = r.defaultTimeoutSeconds as number;
   }
   if (
     Number.isInteger(r.graceTurns) &&
@@ -125,6 +134,8 @@ export function applySettings(
     appliers.setMaxConcurrent(s.maxConcurrent);
   if (typeof s.defaultMaxTurns === "number")
     appliers.setDefaultMaxTurns(s.defaultMaxTurns);
+  if (typeof s.defaultTimeoutSeconds === "number")
+    appliers.setDefaultTimeoutSeconds(s.defaultTimeoutSeconds);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);
   if (s.defaultJoinMode) appliers.setDefaultJoinMode(s.defaultJoinMode);
   if (typeof s.cmuxIntegration === "boolean") appliers.setCmuxIntegration(s.cmuxIntegration);
