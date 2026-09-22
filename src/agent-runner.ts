@@ -15,20 +15,13 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import {
-  getAgentConfig,
-  getConfig,
-  getToolNamesForType,
-} from "./agent-types.ts";
+import { getAgentConfig, getConfig, getToolNamesForType } from "./agent-types.ts";
 import { buildParentContext, extractText } from "./context.ts";
 import { DEFAULT_AGENTS } from "./default-agents.ts";
 import { detectEnv } from "./env.ts";
 import { buildAgentPrompt } from "./prompts.ts";
 import type { SubagentType, ThinkingLevel } from "./types.ts";
-import {
-  PARENT_AGENT_TOOL_NAMES,
-  SUBAGENT_CONTEXT_TOOL_NAMES,
-} from "./tool-constants.ts";
+import { PARENT_AGENT_TOOL_NAMES, SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
 
 export const agentContext = new AsyncLocalStorage<{ agentId: string }>();
 
@@ -84,11 +77,7 @@ export interface RunOptions {
   onTextDelta?: (delta: string, fullText: string) => void;
   onSessionCreated?: (session: AgentSession) => void;
   onTurnEnd?: (turnCount: number) => void;
-  onAssistantUsage?: (usage: {
-    input: number;
-    output: number;
-    cacheWrite: number;
-  }) => void;
+  onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
   onCompaction?: (info: {
     reason: "manual" | "threshold" | "overflow";
     tokensBefore: number;
@@ -109,10 +98,7 @@ function collectResponseText(session: AgentSession) {
     if (event.type === "message_start") {
       text = "";
     }
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       text += event.assistantMessageEvent.delta;
     }
   });
@@ -129,10 +115,20 @@ function getLastAssistantText(session: AgentSession): string {
   return "";
 }
 
-function forwardAbortSignal(
-  session: AgentSession,
-  signal?: AbortSignal,
-): () => void {
+function throwIfProviderFailed(session: AgentSession): void {
+  // pi reports provider errors as assistant messages; prompt() can resolve
+  // normally even though the model request failed.
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const message = session.messages[i];
+    if (message.role !== "assistant") continue;
+    if (message.stopReason === "error") {
+      throw new Error(message.errorMessage || "Subagent model request failed");
+    }
+    return;
+  }
+}
+
+function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
   if (!signal) return () => {};
   const onAbort = () => session.abort();
   signal.addEventListener("abort", onAbort, { once: true });
@@ -157,18 +153,10 @@ export async function runAgent(
 
   let systemPrompt: string;
   if (agentConfig) {
-    systemPrompt = buildAgentPrompt(
-      agentConfig,
-      effectiveCwd,
-      env,
-      parentSystemPrompt,
-    );
+    systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt);
   } else {
     const fallback = DEFAULT_AGENTS.get("general-purpose");
-    if (!fallback)
-      throw new Error(
-        `No fallback config available for unknown type "${type}"`,
-      );
+    if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`);
     systemPrompt = buildAgentPrompt(
       { ...fallback, name: type },
       effectiveCwd,
@@ -194,8 +182,7 @@ export async function runAgent(
   await loader.reload();
 
   const model =
-    options.model ??
-    resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.model);
+    options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.model);
   const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
 
   const sessionOpts: Parameters<typeof createAgentSession>[0] = {
@@ -216,9 +203,7 @@ export async function runAgent(
 
   const baseSessionName = agentConfig?.name ?? type;
   session.setSessionName(
-    options.agentId
-      ? `${baseSessionName}#${options.agentId.slice(0, 8)}`
-      : baseSessionName,
+    options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName,
   );
 
   const disallowedSet = agentConfig?.disallowedTools
@@ -237,32 +222,29 @@ export async function runAgent(
   if (extensions !== false) {
     const builtinToolNameSet = new Set(toolNames);
     const subagentContextToolNameSet = new Set(SUBAGENT_CONTEXT_TOOL_NAMES);
-    const activeTools = session.getAllTools().map((tool) => tool.name).filter((t) => {
-      if (PARENT_AGENT_TOOL_NAMES.includes(t)) return false;
-      if (disallowedSet?.has(t)) return false;
-      if (builtinToolNameSet.has(t)) return true;
-      if (subagentContextToolNameSet.has(t)) return true;
-      if (Array.isArray(extensions)) {
-        return extensions.some(
-          (ext) => t.startsWith(ext) || t.includes(ext),
-        );
-      }
-      return true;
-    });
+    const activeTools = session
+      .getAllTools()
+      .map((tool) => tool.name)
+      .filter((t) => {
+        if (PARENT_AGENT_TOOL_NAMES.includes(t)) return false;
+        if (disallowedSet?.has(t)) return false;
+        if (builtinToolNameSet.has(t)) return true;
+        if (subagentContextToolNameSet.has(t)) return true;
+        if (Array.isArray(extensions)) {
+          return extensions.some((ext) => t.startsWith(ext) || t.includes(ext));
+        }
+        return true;
+      });
     session.setActiveToolsByName(activeTools);
   } else if (disallowedSet) {
-    const activeTools = session
-      .getActiveToolNames()
-      .filter((t) => !disallowedSet.has(t));
+    const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t));
     session.setActiveToolsByName(activeTools);
   }
 
   options.onSessionCreated?.(session);
 
   let turnCount = 0;
-  const maxTurns = normalizeMaxTurns(
-    options.maxTurns ?? agentConfig?.maxTurns,
-  );
+  const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns);
   const effectiveGraceTurns = options.graceTurns ?? 5;
   let softLimitReached = false;
   let aborted = false;
@@ -298,10 +280,7 @@ export async function runAgent(
     if (event.type === "message_start") {
       currentMessageText = "";
     }
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       currentMessageText += event.assistantMessageEvent.delta;
       options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText);
     }
@@ -320,11 +299,7 @@ export async function runAgent(
           cacheWrite: u.cacheWrite ?? 0,
         });
     }
-    if (
-      event.type === "compaction_end" &&
-      !event.aborted &&
-      event.result
-    ) {
+    if (event.type === "compaction_end" && !event.aborted && event.result) {
       options.onCompaction?.({
         reason: event.reason,
         tokensBefore: event.result.tokensBefore,
@@ -344,7 +319,9 @@ export async function runAgent(
   }
 
   try {
-    await agentContext.run({ agentId: options.agentId ?? "" }, () => session.prompt(effectivePrompt));
+    await agentContext.run({ agentId: options.agentId ?? "" }, () =>
+      session.prompt(effectivePrompt),
+    );
   } finally {
     unsubTurns();
     collector.unsubscribe();
@@ -352,8 +329,8 @@ export async function runAgent(
     if (timeoutTimer) clearTimeout(timeoutTimer);
   }
 
-  const responseText =
-    collector.getText().trim() || getLastAssistantText(session);
+  throwIfProviderFailed(session);
+  const responseText = collector.getText().trim() || getLastAssistantText(session);
   return { responseText, session, aborted, steered: softLimitReached && !timedOut, timedOut };
 }
 
@@ -362,11 +339,7 @@ export async function resumeAgent(
   prompt: string,
   options: {
     onToolActivity?: (activity: ToolActivity) => void;
-    onAssistantUsage?: (usage: {
-      input: number;
-      output: number;
-      cacheWrite: number;
-    }) => void;
+    onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
     onCompaction?: (info: {
       reason: "manual" | "threshold" | "overflow";
       tokensBefore: number;
@@ -390,10 +363,7 @@ export async function resumeAgent(
               type: "end",
               toolName: event.toolName,
             });
-          if (
-            event.type === "message_end" &&
-            event.message.role === "assistant"
-          ) {
+          if (event.type === "message_end" && event.message.role === "assistant") {
             const u = (event.message as any).usage;
             if (u)
               options.onAssistantUsage?.({
@@ -402,11 +372,7 @@ export async function resumeAgent(
                 cacheWrite: u.cacheWrite ?? 0,
               });
           }
-          if (
-            event.type === "compaction_end" &&
-            !event.aborted &&
-            event.result
-          ) {
+          if (event.type === "compaction_end" && !event.aborted && event.result) {
             options.onCompaction?.({
               reason: event.reason,
               tokensBefore: event.result.tokensBefore,
@@ -423,13 +389,11 @@ export async function resumeAgent(
     cleanupAbort();
   }
 
+  throwIfProviderFailed(session);
   return collector.getText().trim() || getLastAssistantText(session);
 }
 
-export async function steerAgent(
-  session: AgentSession,
-  message: string,
-): Promise<void> {
+export async function steerAgent(session: AgentSession, message: string): Promise<void> {
   await session.steer(message);
 }
 
@@ -437,10 +401,7 @@ export function getAgentConversation(session: AgentSession): string {
   const parts: string[] = [];
   for (const msg of session.messages) {
     if (msg.role === "user") {
-      const text =
-        typeof msg.content === "string"
-          ? msg.content
-          : extractText(msg.content);
+      const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
       if (text.trim()) parts.push(`[User]: ${text.trim()}`);
     } else if (msg.role === "assistant") {
       const textParts: string[] = [];
@@ -448,18 +409,13 @@ export function getAgentConversation(session: AgentSession): string {
       for (const c of msg.content) {
         if (c.type === "text" && c.text) textParts.push(c.text);
         else if (c.type === "toolCall")
-          toolCalls.push(
-            `  Tool: ${(c as any).name ?? (c as any).toolName ?? "unknown"}`,
-          );
+          toolCalls.push(`  Tool: ${(c as any).name ?? (c as any).toolName ?? "unknown"}`);
       }
-      if (textParts.length > 0)
-        parts.push(`[Assistant]: ${textParts.join("\n")}`);
-      if (toolCalls.length > 0)
-        parts.push(`[Tool Calls]:\n${toolCalls.join("\n")}`);
+      if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
+      if (toolCalls.length > 0) parts.push(`[Tool Calls]:\n${toolCalls.join("\n")}`);
     } else if (msg.role === "toolResult") {
       const text = extractText(msg.content);
-      const truncated =
-        text.length > 200 ? text.slice(0, 200) + "..." : text;
+      const truncated = text.length > 200 ? text.slice(0, 200) + "..." : text;
       parts.push(`[Tool Result (${msg.toolName})]: ${truncated}`);
     }
   }

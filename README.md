@@ -52,6 +52,10 @@ Use `isolation: "worktree"` whenever that `cwd` is a git repository with at leas
 
 Run `/agents` in the pi TUI to browse agent types, manage running agents, and adjust settings (concurrency, max turns, join mode).
 
+## Tests
+
+Run `pnpm install --frozen-lockfile`, then `pnpm test` for unit tests or `pnpm run test:tui` for real pi terminal tests. The TUI tests use a scripted local provider and need no API credentials. See [TUI test guide](docs/tui-tests.md) for setup, focused runs, and failure artifacts.
+
 ## Custom agents
 
 Create a markdown file with frontmatter to define a custom agent:

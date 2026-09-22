@@ -29,11 +29,7 @@ export interface SettingsAppliers {
 
 export type SettingsEmit = (event: string, payload: unknown) => void;
 
-const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>([
-  "async",
-  "group",
-  "smart",
-]);
+const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group", "smart"]);
 
 function sanitize(raw: unknown): SubagentsSettings {
   if (!raw || typeof raw !== "object") return {};
@@ -67,10 +63,7 @@ function sanitize(raw: unknown): SubagentsSettings {
   ) {
     out.graceTurns = r.graceTurns as number;
   }
-  if (
-    typeof r.defaultJoinMode === "string" &&
-    VALID_JOIN_MODES.has(r.defaultJoinMode)
-  ) {
+  if (typeof r.defaultJoinMode === "string" && VALID_JOIN_MODES.has(r.defaultJoinMode)) {
     out.defaultJoinMode = r.defaultJoinMode as JoinMode;
   }
   if (typeof r.cmuxIntegration === "boolean") {
@@ -103,19 +96,14 @@ function readSettingsFile(path: string): SubagentsSettings {
   }
 }
 
-export function loadSettings(
-  cwd: string = process.cwd(),
-): SubagentsSettings {
+export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
   return {
     ...readSettingsFile(globalPath()),
     ...readSettingsFile(projectPath(cwd)),
   };
 }
 
-export function saveSettings(
-  s: SubagentsSettings,
-  cwd: string = process.cwd(),
-): boolean {
+export function saveSettings(s: SubagentsSettings, cwd: string = process.cwd()): boolean {
   const path = projectPath(cwd);
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -126,14 +114,9 @@ export function saveSettings(
   }
 }
 
-export function applySettings(
-  s: SubagentsSettings,
-  appliers: SettingsAppliers,
-): void {
-  if (typeof s.maxConcurrent === "number")
-    appliers.setMaxConcurrent(s.maxConcurrent);
-  if (typeof s.defaultMaxTurns === "number")
-    appliers.setDefaultMaxTurns(s.defaultMaxTurns);
+export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers): void {
+  if (typeof s.maxConcurrent === "number") appliers.setMaxConcurrent(s.maxConcurrent);
+  if (typeof s.defaultMaxTurns === "number") appliers.setDefaultMaxTurns(s.defaultMaxTurns);
   if (typeof s.defaultTimeoutSeconds === "number")
     appliers.setDefaultTimeoutSeconds(s.defaultTimeoutSeconds);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);

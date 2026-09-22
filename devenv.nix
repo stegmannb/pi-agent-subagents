@@ -22,5 +22,6 @@
     pnpm run ci:lint
     pnpm run ci:check
     pnpm test
+    pnpm run test:tui
   '';
 }

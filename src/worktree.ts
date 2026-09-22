@@ -27,19 +27,14 @@ export interface WorktreeCleanupResult {
 function formatCommandError(error: unknown): string {
   if (typeof error === "object" && error !== null) {
     const commandError = error as { stderr?: unknown; message?: unknown };
-    const stderr =
-      typeof commandError.stderr === "string" ? commandError.stderr.trim() : "";
+    const stderr = typeof commandError.stderr === "string" ? commandError.stderr.trim() : "";
     if (stderr) return stderr;
     if (typeof commandError.message === "string") return commandError.message;
   }
   return String(error);
 }
 
-function worktreeSetupError(
-  cwd: string,
-  command: string[],
-  error: unknown,
-): Error {
+function worktreeSetupError(cwd: string, command: string[], error: unknown): Error {
   return new Error(
     [
       `Cannot create an isolated worktree from ${cwd}.`,
@@ -50,10 +45,7 @@ function worktreeSetupError(
   );
 }
 
-export async function createWorktree(
-  cwd: string,
-  agentId: string,
-): Promise<WorktreeInfo> {
+export async function createWorktree(cwd: string, agentId: string): Promise<WorktreeInfo> {
   const verifyCommand = ["rev-parse", "--is-inside-work-tree"];
   try {
     await execFileAsync("git", verifyCommand, { cwd, timeout: 5000 });
@@ -91,11 +83,10 @@ export async function cleanupWorktree(
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["status", "--porcelain"],
-      { cwd: worktree.path, timeout: 10000 },
-    );
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+      cwd: worktree.path,
+      timeout: 10000,
+    });
     const status = stdout.trim();
 
     if (!status) {
@@ -143,11 +134,10 @@ export async function cleanupWorktree(
 
 async function removeWorktree(cwd: string, worktreePath: string): Promise<void> {
   try {
-    await execFileAsync(
-      "git",
-      ["worktree", "remove", "--force", worktreePath],
-      { cwd, timeout: 10000 },
-    );
+    await execFileAsync("git", ["worktree", "remove", "--force", worktreePath], {
+      cwd,
+      timeout: 10000,
+    });
   } catch {
     try {
       await execFileAsync("git", ["worktree", "prune"], {

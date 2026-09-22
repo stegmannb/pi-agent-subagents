@@ -60,9 +60,7 @@ export class GroupJoinManager {
     }
 
     if (!group.timeoutHandle) {
-      const timeout = group.isStraggler
-        ? STRAGGLER_TIMEOUT
-        : this.groupTimeout;
+      const timeout = group.isStraggler ? STRAGGLER_TIMEOUT : this.groupTimeout;
       group.timeoutHandle = setTimeout(() => {
         this.onTimeout(group);
       }, timeout);

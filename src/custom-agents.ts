@@ -42,8 +42,7 @@ function loadFromDir(
       continue;
     }
 
-    const { frontmatter: fm, body } =
-      parseFrontmatter<Record<string, unknown>>(content);
+    const { frontmatter: fm, body } = parseFrontmatter<Record<string, unknown>>(content);
 
     agents.set(name, {
       name,
@@ -59,10 +58,8 @@ function loadFromDir(
       timeoutSeconds: positiveInt(fm.timeout_seconds),
       systemPrompt: body.trim(),
       promptMode: fm.prompt_mode === "append" ? "append" : "replace",
-      inheritContext:
-        fm.inherit_context != null ? fm.inherit_context === true : undefined,
-      runInBackground:
-        fm.run_in_background != null ? fm.run_in_background === true : undefined,
+      inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
+      runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
       isolated: fm.isolated != null ? fm.isolated === true : undefined,
       isolation: fm.isolation === "worktree" ? "worktree" : undefined,
       enabled: fm.enabled !== false,

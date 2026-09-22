@@ -13,14 +13,17 @@ importers:
         version: 0.34.49
     devDependencies:
       '@mariozechner/pi-ai':
-        specifier: ^0.73.0
-        version: 0.73.1(ws@8.20.1)(zod@4.4.3)
+        specifier: 0.73.0
+        version: 0.73.0(ws@8.20.1)(zod@4.4.3)
       '@mariozechner/pi-coding-agent':
-        specifier: ^0.73.0
-        version: 0.73.1(ws@8.20.1)(zod@4.4.3)
+        specifier: 0.73.0
+        version: 0.73.0(ws@8.20.1)(zod@4.4.3)
       '@mariozechner/pi-tui':
-        specifier: ^0.73.0
-        version: 0.73.1
+        specifier: 0.73.0
+        version: 0.73.0
+      '@microsoft/tui-test':
+        specifier: 0.1.0-beta.5
+        version: 0.1.0-beta.5
       '@types/node':
         specifier: ^24
         version: 24.12.4
@@ -226,10 +229,20 @@ packages:
     resolution: {integrity: sha512-MXdtr+6+ntlIVHdrZYuZNQydu6o8yZswFJ2Ln81j2O/Y9B/LDHvEaIm95xWNPkjGTWriSOeLnQJRFs6dYb60bg==}
     engines: {node: '>= 10'}
 
+  '@mariozechner/jiti@2.6.5':
+    resolution: {integrity: sha512-faGUlTcXka5l7rv0lP3K3vGW/ejRuOS24RR2aSFWREUQqzjgdsuWNo/IiPqL3kWRGt6Ahl2+qcDAwtdeWeuGUw==}
+    hasBin: true
+
   '@mariozechner/pi-agent-core@0.73.1':
     resolution: {integrity: sha512-Y/KVOhuKSgRQgYBlwmRtO2gPkUcoavOSqGF9bpQIINvNZvc19k6Z1H3bFDTce3Vp5ApMmTsfLH3+tNvOg75fAQ==}
     engines: {node: '>=20.0.0'}
     deprecated: please use @earendil-works/pi-agent-core instead going forward
+
+  '@mariozechner/pi-ai@0.73.0':
+    resolution: {integrity: sha512-phKOpcde/ssz6UYszkmaGJ9LF9mgt/AP8LrtSwsfap+kMSeFfSQ2/mCSBT1mLJ2BqVuff9uXs1/+op1aQeaafQ==}
+    engines: {node: '>=20.0.0'}
+    deprecated: please use @earendil-works/pi-ai instead going forward
+    hasBin: true
 
   '@mariozechner/pi-ai@0.73.1':
     resolution: {integrity: sha512-Jh4lXawZYuC83HzSIYuVum9NBqJD49i4JOt3H96cGW/924cwJMOyUs1Mv/e4QPzTXnzrqMoGviNQnvGgSu1LSg==}
@@ -237,16 +250,66 @@ packages:
     deprecated: please use @earendil-works/pi-ai instead going forward
     hasBin: true
 
-  '@mariozechner/pi-coding-agent@0.73.1':
-    resolution: {integrity: sha512-gXQh3SaZmWTfVMc4Ao5+LGbVeKvzyO7tolok0nLsZgq9nGjZx/EEU3NM8C+qUnB4Nvs2rswG5qOVgLzQkq0fHQ==}
+  '@mariozechner/pi-coding-agent@0.73.0':
+    resolution: {integrity: sha512-Fs2dRIgtjDT8X5VDGNGzxj251B0FvkRsgX03YJv1FK4wg5Maj+jkf8/5A6tbPnPcXsCgs41xxJRf3tF5vJRccA==}
     engines: {node: '>=20.6.0'}
     deprecated: please use @earendil-works/pi-coding-agent instead going forward
     hasBin: true
 
-  '@mariozechner/pi-tui@0.73.1':
-    resolution: {integrity: sha512-ybVsRnUbzQRtbocltJ2OXb2QogrO67N2BlUyKjZz9BHcZYiDJtNkcKQockxDjsVvDc0uBCLDX6iZJoBElBd8fw==}
+  '@mariozechner/pi-tui@0.73.0':
+    resolution: {integrity: sha512-St1W+tMPKHatfK+lblsKfL+SsFyFVMK2tW6xHpBfCiMuevbOCRo/CMatso7mu1642UO04ncmfCrrpUK5L9aoog==}
     engines: {node: '>=20.0.0'}
     deprecated: please use @earendil-works/pi-tui instead going forward
+
+  '@microsoft/tui-test-darwin-arm64@0.1.0-beta.5':
+    resolution: {integrity: sha512-9OFO6vvdJM9+/YaCuxFFWbOqb3ROTuGAzrPljFMyFlpvVtG8PK2u7UHMRQN8QDib2vi8P4DqDQcyknAcW6D5MQ==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@microsoft/tui-test-darwin-x64@0.1.0-beta.5':
+    resolution: {integrity: sha512-7ikOPiWnDVPphz2d0QVFXwkWW6Ip1HITtu56q4u5tcA1FlkliBBCm7XeYBslMz4klfuP/wWsmxnlsImKuD22Tw==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@microsoft/tui-test-linux-arm64-gnu@0.1.0-beta.5':
+    resolution: {integrity: sha512-8epwwDxT9+GMt0Z28VCNUKTh2Insrl7DXYp5UD90iVstwOt3vzre5KvrYrsKvUmLp9rQ1ac5mGDOU0zUFkBb0Q==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@microsoft/tui-test-linux-arm64-musl@0.1.0-beta.5':
+    resolution: {integrity: sha512-i3ZHwtVDwKr9WVFOEWYRX0ZhjMRhGybH8EDkQehjuisjIDarjIcSlh8LYzTjy7mrP8BpfCYImbWreVk6qI6hAw==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@microsoft/tui-test-linux-x64-gnu@0.1.0-beta.5':
+    resolution: {integrity: sha512-S+W5MLAhFhN74EP5HA+DJBh+LTq81LmENe0YPQp5biz43b86pRMnRVY7q1apr57SqXZMJNmtD828EP/ClsAoPQ==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@microsoft/tui-test-linux-x64-musl@0.1.0-beta.5':
+    resolution: {integrity: sha512-0XGCZT6gyeBbsD9ejRY1llKib9Crfg/8NK3WJ9UJJ8IamF0z+L5fgY6DsJOfp6z35/bYt9mUuawRie4TBDcs4w==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@microsoft/tui-test-win32-x64-msvc@0.1.0-beta.5':
+    resolution: {integrity: sha512-4fVCQGrJLGHhRMFB0vhs5/XUJm1rW2uXBeH8WkSQX27mS8UOrZ9k6tIzptdSU19e1/XD7b6diT6Vx0Yqt4kuYg==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [win32]
+
+  '@microsoft/tui-test@0.1.0-beta.5':
+    resolution: {integrity: sha512-BSK8uxPByrgi3pTO8MJcubrY9H2jxIXa4ym7ODgCY4V8Km2e4fIV+AE6izCZAeMTd59loSlPWL0GuEVr9d4o7w==}
+    engines: {node: '>=20'}
 
   '@mistralai/mistralai@2.2.1':
     resolution: {integrity: sha512-uKU8CZmL2RzYKmplsU01hii4p3pe4HqJefpWNRWXm1Tcm0Sm4xXfwSLIy4k7ZCPlbETCGcp69E7hZs+WOJ5itQ==}
@@ -824,10 +887,6 @@ packages:
     resolution: {integrity: sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==}
     engines: {node: '>=8'}
 
-  jiti@2.7.0:
-    resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
-    hasBin: true
-
   json-bigint@1.0.0:
     resolution: {integrity: sha512-SiPv/8VpZuWbvLSMtTDU8hEfrZWg/mH/nV/b4o0CYbSxu1UIQPLdwKOCIyLQX+VIPO5vrLX3i8qtqFyhdPSUSQ==}
 
@@ -1015,6 +1074,9 @@ packages:
     resolution: {integrity: sha512-UjgapumWlbMhkBgzT7Ykc5YXUT46F0iKu8SGXq0bcwP5dz/h0Plj6enJqjz1Zbq2l5WaqYnrVbwWOWMyF3F47g==}
     engines: {node: '>=0.10.0'}
 
+  std-env@3.10.0:
+    resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
+
   string-width@4.2.3:
     resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
     engines: {node: '>=8'}
@@ -1128,6 +1190,10 @@ packages:
 
   yauzl@2.10.0:
     resolution: {integrity: sha512-p4a9I6X6nu6IhoGmBqAcbJy1mlC4j27vEPZX9F4L4/vZT3Lyq1VkFHw/V/PUcB9Buo+DG3iHkT0x3Qya58zc3g==}
+
+  yoctocolors@2.2.0:
+    resolution: {integrity: sha512-xYqdZFUK/VYazNl/oCDYN+3WloWQwMfZxBoiNt6qNyk+xfOdi598muWE42rNZFp1kNOiqW936q5RhUdnpqElSg==}
+    engines: {node: '>=18'}
 
   zod-to-json-schema@3.25.2:
     resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
@@ -1420,10 +1486,36 @@ snapshots:
       '@mariozechner/clipboard-win32-x64-msvc': 0.3.6
     optional: true
 
+  '@mariozechner/jiti@2.6.5':
+    dependencies:
+      std-env: 3.10.0
+      yoctocolors: 2.2.0
+
   '@mariozechner/pi-agent-core@0.73.1(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@mariozechner/pi-ai': 0.73.1(ws@8.20.1)(zod@4.4.3)
       typebox: 1.1.38
+    transitivePeerDependencies:
+      - '@modelcontextprotocol/sdk'
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - ws
+      - zod
+
+  '@mariozechner/pi-ai@0.73.0(ws@8.20.1)(zod@4.4.3)':
+    dependencies:
+      '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
+      '@aws-sdk/client-bedrock-runtime': 3.1049.0
+      '@google/genai': 1.52.0
+      '@mistralai/mistralai': 2.2.1
+      chalk: 5.6.2
+      openai: 6.26.0(ws@8.20.1)(zod@4.4.3)
+      partial-json: 0.1.7
+      proxy-agent: 6.5.0
+      typebox: 1.1.38
+      undici: 7.25.0
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
       - bufferutil
@@ -1453,11 +1545,12 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-coding-agent@0.73.1(ws@8.20.1)(zod@4.4.3)':
+  '@mariozechner/pi-coding-agent@0.73.0(ws@8.20.1)(zod@4.4.3)':
     dependencies:
+      '@mariozechner/jiti': 2.6.5
       '@mariozechner/pi-agent-core': 0.73.1(ws@8.20.1)(zod@4.4.3)
-      '@mariozechner/pi-ai': 0.73.1(ws@8.20.1)(zod@4.4.3)
-      '@mariozechner/pi-tui': 0.73.1
+      '@mariozechner/pi-ai': 0.73.0(ws@8.20.1)(zod@4.4.3)
+      '@mariozechner/pi-tui': 0.73.0
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cli-highlight: 2.1.11
@@ -1467,7 +1560,6 @@ snapshots:
       glob: 13.0.6
       hosted-git-info: 9.0.3
       ignore: 7.0.5
-      jiti: 2.7.0
       marked: 15.0.12
       minimatch: 10.2.5
       proper-lockfile: 4.1.2
@@ -1486,7 +1578,7 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-tui@0.73.1':
+  '@mariozechner/pi-tui@0.73.0':
     dependencies:
       '@types/mime-types': 2.1.4
       chalk: 5.6.2
@@ -1495,6 +1587,37 @@ snapshots:
       mime-types: 3.0.2
     optionalDependencies:
       koffi: 2.16.2
+
+  '@microsoft/tui-test-darwin-arm64@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-darwin-x64@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-linux-arm64-gnu@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-linux-arm64-musl@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-linux-x64-gnu@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-linux-x64-musl@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test-win32-x64-msvc@0.1.0-beta.5':
+    optional: true
+
+  '@microsoft/tui-test@0.1.0-beta.5':
+    optionalDependencies:
+      '@microsoft/tui-test-darwin-arm64': 0.1.0-beta.5
+      '@microsoft/tui-test-darwin-x64': 0.1.0-beta.5
+      '@microsoft/tui-test-linux-arm64-gnu': 0.1.0-beta.5
+      '@microsoft/tui-test-linux-arm64-musl': 0.1.0-beta.5
+      '@microsoft/tui-test-linux-x64-gnu': 0.1.0-beta.5
+      '@microsoft/tui-test-linux-x64-musl': 0.1.0-beta.5
+      '@microsoft/tui-test-win32-x64-msvc': 0.1.0-beta.5
 
   '@mistralai/mistralai@2.2.1':
     dependencies:
@@ -1952,8 +2075,6 @@ snapshots:
 
   is-fullwidth-code-point@3.0.0: {}
 
-  jiti@2.7.0: {}
-
   json-bigint@1.0.0:
     dependencies:
       bignumber.js: 9.3.1
@@ -2183,6 +2304,8 @@ snapshots:
   source-map@0.6.1:
     optional: true
 
+  std-env@3.10.0: {}
+
   string-width@4.2.3:
     dependencies:
       emoji-regex: 8.0.0
@@ -2273,6 +2396,8 @@ snapshots:
     dependencies:
       buffer-crc32: 0.2.13
       fd-slicer: 1.1.0
+
+  yoctocolors@2.2.0: {}
 
   zod-to-json-schema@3.25.2(zod@4.4.3):
     dependencies:

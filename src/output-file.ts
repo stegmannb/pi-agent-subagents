@@ -2,18 +2,10 @@
  * output-file.ts — Streaming JSONL output file for agent transcripts.
  */
 
-import {
-  appendFileSync,
-  chmodSync,
-  mkdirSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import type {
-  AgentSession,
-  AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 
 export function encodeCwd(cwd: string): string {
   return cwd
@@ -22,15 +14,15 @@ export function encodeCwd(cwd: string): string {
     .replace(/^-+/, "");
 }
 
-export function createOutputFilePath(
-  cwd: string,
-  agentId: string,
-  sessionId: string,
-): string {
+export function createOutputFilePath(cwd: string, agentId: string, sessionId: string): string {
   const encoded = encodeCwd(cwd);
   const uid = (() => {
     if (process.getuid) return String(process.getuid());
-    try { return userInfo().username; } catch { return "user"; }
+    try {
+      return userInfo().username;
+    } catch {
+      return "user";
+    }
   })();
   const root = join(tmpdir(), `pi-subagents-${uid}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -61,12 +53,7 @@ export function writeInitialEntry(
   writeFileSync(path, JSON.stringify(entry) + "\n", "utf-8");
 }
 
-export function appendErrorEntry(
-  path: string,
-  agentId: string,
-  error: string,
-  cwd: string,
-): void {
+export function appendErrorEntry(path: string, agentId: string, error: string, cwd: string): void {
   const entry = {
     isSidechain: true,
     agentId,
@@ -97,12 +84,7 @@ export function streamToOutputFile(
       const entry = {
         isSidechain: true,
         agentId,
-        type:
-          msg.role === "assistant"
-            ? "assistant"
-            : msg.role === "user"
-              ? "user"
-              : "toolResult",
+        type: msg.role === "assistant" ? "assistant" : msg.role === "user" ? "user" : "toolResult",
         message: msg,
         timestamp: new Date().toISOString(),
         cwd,

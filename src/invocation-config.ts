@@ -5,7 +5,12 @@
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "./types.ts";
 
 export const VALID_THINKING_LEVELS: ReadonlySet<string> = new Set([
-  "off", "minimal", "low", "medium", "high", "xhigh",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
 ]);
 
 interface AgentInvocationParams {
@@ -43,10 +48,8 @@ export function resolveAgentInvocationConfig(
     })(),
     maxTurns: agentConfig?.maxTurns ?? params.max_turns,
     timeoutSeconds: agentConfig?.timeoutSeconds ?? params.timeout_seconds,
-    inheritContext:
-      agentConfig?.inheritContext ?? params.inherit_context ?? false,
-    runInBackground:
-      agentConfig?.runInBackground ?? params.run_in_background ?? false,
+    inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
+    runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
     isolated: agentConfig?.isolated ?? params.isolated ?? false,
     isolation: agentConfig?.isolation ?? params.isolation,
   };

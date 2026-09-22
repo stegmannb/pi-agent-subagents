@@ -4,3 +4,5 @@
 .pi/
 node_modules/
 result
+test-results/
+.tui-test/
