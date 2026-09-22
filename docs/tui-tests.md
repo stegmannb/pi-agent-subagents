@@ -8,11 +8,15 @@ In the repository's direnv environment:
 
 ```sh
 direnv allow "$PWD"
-direnv exec "$PWD" pnpm install --frozen-lockfile
-direnv exec "$PWD" pnpm run test:tui
+direnv exec "$PWD" devenv tasks run test:tui
+direnv exec "$PWD" devenv tasks run test:tui:repeat
 ```
 
-`pnpm test` runs the existing unit suite. `pnpm run test:tui:repeat` runs the TUI suite three times for a bounded repeat check. The devenv `enterTest` hook and GitHub workflow also run formatting, linting, type checking, unit tests, and the TUI suite.
+Both tasks install dependencies from the frozen lockfile first. `test:tui:repeat` runs the TUI suite three times for a bounded repeat check, stopping on the first failed run. Tests always execute; these tasks have no success cache.
+
+`direnv exec "$PWD" devenv test` runs `check:fmt`, `check:lint`, `check:types`, `test:unit`, and `test:tui` through the `devenv:enterTest` dependency graph. The shared `deps:install` prerequisite runs once. The repeat task is explicit and is not part of the default test graph.
+
+Use `devenv tasks list` to discover the named tasks or `devenv tasks run test:unit` for the existing unit suite. The underlying `pnpm test`, `pnpm run test:tui`, and `pnpm run test:tui:repeat` commands remain available; the GitHub workflow uses the pnpm commands with the same lockfile.
 
 To reproduce one file or test name, use the same Node invocation as `test:tui`:
 
