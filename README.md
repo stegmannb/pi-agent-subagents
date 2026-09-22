@@ -4,6 +4,8 @@
 
 A [pi](https://github.com/mariozechner/pi) extension that adds autonomous sub-agent support to the coding agent.
 
+The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents). Issues, pull requests, and CI belong there. [GitHub](https://github.com/stegmannb/pi-agent-subagents) is a mirror.
+
 ## What it does
 
 Provides three tools and a `/agents` management command:
@@ -54,7 +56,7 @@ Run `/agents` in the pi TUI to browse agent types, manage running agents, and ad
 
 ## Tests
 
-Run `pnpm install --frozen-lockfile`, then `pnpm test` for unit tests or `pnpm run test:tui` for real pi terminal tests. The TUI tests use a scripted local provider and need no API credentials. See [TUI test guide](docs/tui-tests.md) for setup, focused runs, and failure artifacts.
+Run `devenv test` for all checks, `devenv tasks run test:unit` for unit tests, or `devenv tasks run test:tui` for real pi terminal tests. The TUI tests use a scripted local provider and need no API credentials. See [TUI test guide](docs/tui-tests.md) for setup, focused runs, and failure artifacts.
 
 ## Custom agents
 

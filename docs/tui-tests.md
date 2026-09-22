@@ -1,6 +1,6 @@
 # TUI tests
 
-The TUI suite starts the installed pi CLI in a pseudo terminal and exercises this extension through the same `/agents` menus and tools a person uses. It pins `@microsoft/tui-test` 0.1.0-beta.5 and the direct pi packages to 0.73.0. Local Nix validation uses Node 22.22.2 and pnpm 10.33.2, matching the GitHub workflow. The scripted provider in `tests/tui/fixtures/provider.ts` returns fixed responses and tool calls. No model service or API key is needed.
+The TUI suite starts the installed pi CLI in a pseudo terminal and exercises this extension through the same `/agents` menus and tools a person uses. It pins `@microsoft/tui-test` 0.1.0-beta.5 and the direct pi packages to 0.73.0. Local Nix validation uses Node 22.22.2 and pnpm 10.33.2. The scripted provider in `tests/tui/fixtures/provider.ts` returns fixed responses and tool calls. No model service or API key is needed.
 
 ## Run locally
 
@@ -16,7 +16,7 @@ Both tasks install dependencies from the frozen lockfile first. `test:tui:repeat
 
 `direnv exec "$PWD" devenv test` runs `check:fmt`, `check:lint`, `check:types`, `test:unit`, and `test:tui` through the `devenv:enterTest` dependency graph. The shared `deps:install` prerequisite runs once. The repeat task is explicit and is not part of the default test graph.
 
-Use `devenv tasks list` to discover the named tasks or `devenv tasks run test:unit` for the existing unit suite. The underlying `pnpm test`, `pnpm run test:tui`, and `pnpm run test:tui:repeat` commands remain available; the GitHub workflow uses the pnpm commands with the same lockfile.
+Use `devenv tasks list` to discover the named tasks or `devenv tasks run test:unit` for the existing unit suite. The underlying `pnpm test`, `pnpm run test:tui`, and `pnpm run test:tui:repeat` commands remain available.
 
 To reproduce one file or test name, use the same Node invocation as `test:tui`:
 
@@ -26,6 +26,12 @@ direnv exec "$PWD" node --experimental-strip-types --test --test-concurrency=1 -
 ```
 
 The suite runs one test file at a time because each case owns a real terminal process. A test case may take up to 60 seconds. The smoke test has a 30 second limit.
+
+## CI and repository
+
+[Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents) is the primary repository. `.forgejo/workflows/test.yml` runs the required checks on pushes and pull requests and uploads terminal artifacts. GitHub is a mirror and has no separate test workflow. Use the Forgejo run for validation and review.
+
+CI uses the repository's `flake.lock` to provide Node 22.22.3 and pnpm 10.33.4 through `nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10`. It runs the same pnpm checks as the local devenv tasks, including the frozen dependency install. The checkout and Forgejo-compatible artifact actions are pinned to commit SHAs.
 
 ## Fixture and checks
 
@@ -53,7 +59,7 @@ For a new model scenario, add a narrowly matched branch in `provider.ts` and ret
 
 ## Failure artifacts
 
-On failure, `withPi` writes `failure.txt`, `terminal.txt`, an SVG terminal screenshot, and any provider or lifecycle event logs under `test-results/<test-name>/<fixture-id>/`. `@microsoft/tui-test` also writes its trace and recording there. The Node test output prints the artifact directory. GitHub Actions uploads `test-results/` even when an earlier check fails; the upload step ignores a missing directory.
+On failure, `withPi` writes `failure.txt`, `terminal.txt`, an SVG terminal screenshot, and any provider or lifecycle event logs under `test-results/<test-name>/<fixture-id>/`. `@microsoft/tui-test` also writes its trace and recording there. The Node test output prints the artifact directory. Forgejo Actions uploads `test-results/` even when an earlier check fails; the upload step ignores a missing directory.
 
 Traces are retained for successful cases too. Start with `terminal.txt` and the event logs for a failure, then open the generated `trace.html` or SVG for input/render timing. An assertion failure during initial development verified the text and SVG capture path; a passing run does not suppress previous artifacts.
 

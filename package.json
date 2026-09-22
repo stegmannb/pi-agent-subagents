@@ -17,14 +17,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stegmannb/pi-agent-subagents.git"
+    "url": "git+https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents.git"
   },
   "author": "Bastian Stegmann",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/stegmannb/pi-agent-subagents/issues"
+    "url": "https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents/issues"
   },
-  "homepage": "https://github.com/stegmannb/pi-agent-subagents",
+  "homepage": "https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents",
   "scripts": {
     "fmt": "oxfmt src/ tests/ index.ts",
     "lint": "oxlint src/ tests/ index.ts",
