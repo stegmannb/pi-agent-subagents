@@ -1,0 +1,11 @@
+{
+  "name": "pasa-herdr-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "@microsoft/tui-test": "0.1.0-beta.5"
+  }
+}
