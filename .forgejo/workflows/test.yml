@@ -9,6 +9,7 @@ env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
     sandbox = false
+    keep-build-log = false
   XDG_RUNTIME_DIR: /tmp/forgejo-runtime
 
 jobs:
