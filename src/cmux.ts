@@ -12,7 +12,9 @@ export function isCmuxAvailable(): boolean {
 }
 
 function run(args: string[]): void {
-  execFile("cmux", args, () => { /* ignore errors — cmux is best-effort */ });
+  execFile("cmux", args, () => {
+    /* ignore errors — cmux is best-effort */
+  });
 }
 
 export interface CmuxOptions {
@@ -36,29 +38,32 @@ export class CmuxReporter {
   onAgentStart(description: string, runningCount: number): void {
     if (!this.active) return;
     this.cancelLinger();
-    run(["set-status", "pi",
+    run([
+      "set-status",
+      "pi",
       `${runningCount} agent${runningCount === 1 ? "" : "s"} running`,
-      "--color", "#3b82f6"]);
-    run(["log", "--level", "progress", "--source", "subagents",
-      `Started: ${description}`]);
+      "--color",
+      "#3b82f6",
+    ]);
+    run(["log", "--level", "progress", "--source", "subagents", `Started: ${description}`]);
   }
 
   onAgentComplete(description: string, status: string, runningCount: number): void {
     if (!this.active) return;
-    const level =
-      status === "completed" ? "success" :
-      status === "error" ? "error" :
-      "warning";
-    run(["log", "--level", level, "--source", "subagents",
-      `${description}: ${status}`]);
+    const level = status === "completed" ? "success" : status === "error" ? "error" : "warning";
+    run(["log", "--level", level, "--source", "subagents", `${description}: ${status}`]);
 
     if (runningCount === 0) {
       run(["set-status", "pi", "Done ✓", "--color", "#22c55e"]);
       this.scheduleLinger();
     } else {
-      run(["set-status", "pi",
+      run([
+        "set-status",
+        "pi",
         `${runningCount} agent${runningCount === 1 ? "" : "s"} running`,
-        "--color", "#3b82f6"]);
+        "--color",
+        "#3b82f6",
+      ]);
     }
   }
 

@@ -16,10 +16,54 @@
     echo "Use: pnpm install && pnpm run check"
   '';
 
-  enterTest = ''
-    pnpm install --frozen-lockfile
-    pnpm run ci:fmt
-    pnpm run ci:lint
-    pnpm run ci:check
-  '';
+  tasks = {
+    "deps:install" = {
+      description = "Install the locked pnpm dependencies.";
+      exec = "pnpm install --frozen-lockfile";
+    };
+
+    "check:fmt" = {
+      description = "Check source and test formatting.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run ci:fmt";
+    };
+
+    "check:lint" = {
+      description = "Lint source and tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run ci:lint";
+    };
+
+    "check:types" = {
+      description = "Type-check source and tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run ci:check";
+    };
+
+    "test:unit" = {
+      description = "Run the unit and worktree tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm test";
+      showOutput = true;
+    };
+
+    "test:tui" = {
+      description = "Run the real pi TUI test suite.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run test:tui";
+      showOutput = true;
+    };
+
+    "test:tui:repeat" = {
+      description = "Run three full TUI suites to check timing stability.";
+      after = [ "deps:install" ];
+      exec = "pnpm run test:tui:repeat";
+      showOutput = true;
+    };
+  };
 }

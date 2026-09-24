@@ -17,19 +17,22 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stegmannb/pi-agent-subagents.git"
+    "url": "git+https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents.git"
   },
   "author": "Bastian Stegmann",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/stegmannb/pi-agent-subagents/issues"
+    "url": "https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents/issues"
   },
-  "homepage": "https://github.com/stegmannb/pi-agent-subagents",
+  "homepage": "https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents",
   "scripts": {
-    "fmt": "oxfmt src/ index.ts",
-    "lint": "oxlint src/ index.ts",
+    "fmt": "oxfmt src/ tests/ index.ts",
+    "lint": "oxlint src/ tests/ index.ts",
     "check": "tsc --noEmit",
-    "ci:fmt": "oxfmt --check src/ index.ts",
+    "test": "node --test src/*.test.ts",
+    "test:tui": "node --experimental-strip-types --test --test-concurrency=1 tests/tui/*.test.ts",
+    "test:tui:repeat": "node tests/tui/repeat.mjs",
+    "ci:fmt": "oxfmt --check src/ tests/ index.ts",
     "ci:lint": "pnpm run lint",
     "ci:check": "pnpm run check"
   },
@@ -53,9 +56,10 @@
     "@sinclair/typebox": "^0.34.49"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.73.0",
-    "@mariozechner/pi-coding-agent": "^0.73.0",
-    "@mariozechner/pi-tui": "^0.73.0",
+    "@mariozechner/pi-ai": "0.73.0",
+    "@mariozechner/pi-coding-agent": "0.73.0",
+    "@mariozechner/pi-tui": "0.73.0",
+    "@microsoft/tui-test": "0.1.0-beta.5",
     "@types/node": "^24",
     "oxfmt": "^0.33.0",
     "oxlint": "^1.0.0",

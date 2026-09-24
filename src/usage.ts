@@ -22,9 +22,7 @@ export type SessionStatsLike = {
 
 export type SessionLike = { getSessionStats(): SessionStatsLike };
 
-export function getSessionContextPercent(
-  session: SessionLike | undefined,
-): number | null {
+export function getSessionContextPercent(session: SessionLike | undefined): number | null {
   if (!session) return null;
   try {
     return session.getSessionStats().contextUsage?.percent ?? null;

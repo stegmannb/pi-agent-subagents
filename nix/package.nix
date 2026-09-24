@@ -13,12 +13,23 @@ stdenv.mkDerivation (finalAttrs: {
   pname = packageJson.name;
   version = packageJson.version;
 
-  src = lib.cleanSource ../.;
+  src = lib.cleanSourceWith {
+    src = ../.;
+    filter =
+      path: type:
+      lib.cleanSourceFilter path type
+      && !(type == "directory" && builtins.elem (builtins.baseNameOf path) [
+        ".devenv"
+        ".direnv"
+        "node_modules"
+        "test-results"
+      ]);
+  };
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     fetcherVersion = 3;
-    hash = "sha256-yoatSMuVrU+VuvIzL+3JvXCyUeyAqI2x1VBfXXMiuWo=";
+    hash = "sha256-zreyIFKBpwjobij1Nc8Nm3RU9qr4pzYv6DIyj8/iZi8=";
   };
 
   nativeBuildInputs = [

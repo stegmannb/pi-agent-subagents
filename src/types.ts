@@ -30,6 +30,7 @@ export interface AgentConfig {
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
+  timeoutSeconds?: number;
   systemPrompt: string;
   promptMode: "replace" | "append";
   inheritContext?: boolean;
@@ -45,10 +46,12 @@ export interface AgentInvocation {
   modelName?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
+  timeoutSeconds?: number;
   isolated?: boolean;
   inheritContext?: boolean;
   runInBackground?: boolean;
   isolation?: IsolationMode;
+  cwd?: string;
 }
 
 export type LifetimeUsage = {
@@ -90,6 +93,7 @@ export interface AgentRecord {
   lifetimeUsage: LifetimeUsage;
   compactionCount: number;
   invocation?: AgentInvocation;
+  timedOut?: boolean;
   helpResolver?: (response: string) => void;
   helpMessage?: string;
   completionReport?: CompletionReport;

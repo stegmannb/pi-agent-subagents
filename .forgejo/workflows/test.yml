@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    sandbox = false
+    keep-build-log = false
+  XDG_RUNTIME_DIR: /tmp/forgejo-runtime
+
+jobs:
+  test:
+    runs-on: [k8s-executor-medium, amd64]
+    timeout-minutes: 20
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run checks with locked Nix tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 --command bash -euo pipefail -c '
+            pnpm install --frozen-lockfile
+            pnpm run ci:fmt
+            pnpm run ci:lint
+            pnpm run ci:check
+            pnpm test
+            pnpm run test:tui
+          '
+      - name: Upload TUI failure artifacts
+        if: always()
+        uses: https://data.forgejo.org/actions/upload-artifact@c24449f33cd45d4826c6702db7e49f7cdb9b551d # v3-node20
+        with:
+          name: tui-test-results
+          path: test-results/
+          if-no-files-found: ignore

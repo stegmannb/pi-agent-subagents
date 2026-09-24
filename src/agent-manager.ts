@@ -4,17 +4,8 @@
 
 import { randomUUID } from "node:crypto";
 import type { Model } from "@mariozechner/pi-ai";
-import type {
-  AgentSession,
-  ExtensionAPI,
-  ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
-import {
-  normalizeMaxTurns,
-  resumeAgent,
-  runAgent,
-  type ToolActivity,
-} from "./agent-runner.ts";
+import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { normalizeMaxTurns, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.ts";
 import type {
   AgentInvocation,
   AgentRecord,
@@ -22,19 +13,13 @@ import type {
   SubagentType,
   ThinkingLevel,
 } from "./types.ts";
+import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
-import {
-  cleanupWorktree,
-  createWorktree,
-  pruneWorktrees,
-} from "./worktree.ts";
+import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.ts";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
-export type OnAgentCompact = (
-  record: AgentRecord,
-  info: CompactionInfo,
-) => void;
+export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
 export type CompactionInfo = {
   reason: "manual" | "threshold" | "overflow";
   tokensBefore: number;
@@ -54,22 +39,20 @@ interface SpawnOptions {
   description: string;
   model?: Model<any>;
   maxTurns?: number;
+  timeoutSeconds?: number;
   isolated?: boolean;
   inheritContext?: boolean;
   thinkingLevel?: ThinkingLevel;
   isBackground?: boolean;
   isolation?: IsolationMode;
+  cwd?: string;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
   onToolActivity?: (activity: ToolActivity) => void;
   onTextDelta?: (delta: string, fullText: string) => void;
   onSessionCreated?: (session: AgentSession) => void;
   onTurnEnd?: (turnCount: number) => void;
-  onAssistantUsage?: (usage: {
-    input: number;
-    output: number;
-    cacheWrite: number;
-  }) => void;
+  onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
   onCompaction?: (info: CompactionInfo) => void;
 }
 
@@ -83,6 +66,7 @@ export class AgentManager {
   private queue: { id: string; args: SpawnArgs }[] = [];
   private readyResolvers = new Map<string, () => void>();
   private defaultMaxTurns: number | undefined = undefined;
+  private defaultTimeoutSeconds: number | undefined = undefined;
   private graceTurns = 5;
   private runningBackground = 0;
 
@@ -114,6 +98,12 @@ export class AgentManager {
   }
   setDefaultMaxTurns(n: number | undefined): void {
     this.defaultMaxTurns = normalizeMaxTurns(n);
+  }
+  getDefaultTimeoutSeconds(): number | undefined {
+    return this.defaultTimeoutSeconds;
+  }
+  setDefaultTimeoutSeconds(n: number | undefined): void {
+    this.defaultTimeoutSeconds = n == null || n <= 0 ? undefined : n;
   }
   getGraceTurns(): number {
     return this.graceTurns;
@@ -147,10 +137,7 @@ export class AgentManager {
 
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
-    if (
-      options.isBackground &&
-      this.runningBackground >= this.maxConcurrent
-    ) {
+    if (options.isBackground && this.runningBackground >= this.maxConcurrent) {
       this.queue.push({ id, args });
       record.readyPromise = new Promise<void>((resolve) => {
         this.readyResolvers.set(id, resolve);
@@ -188,72 +175,65 @@ export class AgentManager {
     if (options.signal) {
       const onParentAbort = () => this.abort(id);
       options.signal.addEventListener("abort", onParentAbort, { once: true });
-      detachParentSignal = () =>
-        options.signal!.removeEventListener("abort", onParentAbort);
+      detachParentSignal = () => options.signal!.removeEventListener("abort", onParentAbort);
     }
     const detach = () => {
       detachParentSignal?.();
       detachParentSignal = undefined;
     };
 
+    const sourceCwd = options.cwd ?? ctx.cwd;
     const promise = (async () => {
       let worktreeCwd: string | undefined;
       if (options.isolation === "worktree") {
-        const wt = await createWorktree(ctx.cwd, id);
-        if (!wt) {
-          throw new Error(
-            'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed.',
-          );
-        }
+        const wt = await createWorktree(sourceCwd, id);
         record.worktree = wt;
         worktreeCwd = wt.path;
       }
       return runAgent(ctx, type, prompt, {
-      pi,
-      agentId: id,
-      graceTurns: this.graceTurns,
-      model: options.model,
-      maxTurns: options.maxTurns,
-      isolated: options.isolated,
-      inheritContext: options.inheritContext,
-      thinkingLevel: options.thinkingLevel,
-      cwd: worktreeCwd,
-      signal: record.abortController!.signal,
-      onToolActivity: (activity) => {
-        if (activity.type === "end") record.toolUses++;
-        options.onToolActivity?.(activity);
-      },
-      onTurnEnd: options.onTurnEnd,
-      onTextDelta: options.onTextDelta,
-      onAssistantUsage: (usage) => {
-        addUsage(record.lifetimeUsage, usage);
-        options.onAssistantUsage?.(usage);
-      },
-      onCompaction: (info) => {
-        record.compactionCount++;
-        this.onCompact?.(record, info);
-        options.onCompaction?.(info);
-      },
-      onSessionCreated: (session) => {
-        record.session = session;
-        if (record.pendingSteers?.length) {
-          for (const msg of record.pendingSteers) {
-            session.steer(msg).catch(() => {});
+        pi,
+        agentId: id,
+        graceTurns: this.graceTurns,
+        model: options.model,
+        maxTurns: options.maxTurns,
+        timeoutSeconds: options.timeoutSeconds,
+        isolated: options.isolated,
+        inheritContext: options.inheritContext,
+        thinkingLevel: options.thinkingLevel,
+        cwd: worktreeCwd ?? sourceCwd,
+        signal: record.abortController!.signal,
+        onToolActivity: (activity) => {
+          if (activity.type === "end") record.toolUses++;
+          options.onToolActivity?.(activity);
+        },
+        onTurnEnd: options.onTurnEnd,
+        onTextDelta: options.onTextDelta,
+        onAssistantUsage: (usage) => {
+          addUsage(record.lifetimeUsage, usage);
+          options.onAssistantUsage?.(usage);
+        },
+        onCompaction: (info) => {
+          record.compactionCount++;
+          this.onCompact?.(record, info);
+          options.onCompaction?.(info);
+        },
+        onSessionCreated: (session) => {
+          record.session = session;
+          if (record.pendingSteers?.length) {
+            for (const msg of record.pendingSteers) {
+              session.steer(msg).catch(() => {});
+            }
+            record.pendingSteers = undefined;
           }
-          record.pendingSteers = undefined;
-        }
-        options.onSessionCreated?.(session);
-      },
-    });
+          options.onSessionCreated?.(session);
+        },
+      });
     })() // end async IIFE (worktree setup + runAgent)
-      .then(async ({ responseText, session, aborted, steered }) => {
+      .then(async ({ responseText, session, aborted, steered, timedOut }) => {
         if (record.status !== "stopped") {
-          record.status = aborted
-            ? "aborted"
-            : steered
-              ? "steered"
-              : "completed";
+          record.status = aborted ? "aborted" : steered ? "steered" : "completed";
         }
+        record.timedOut = timedOut;
         record.result = responseText;
         record.session = session;
         record.completedAt ??= Date.now();
@@ -269,11 +249,7 @@ export class AgentManager {
         }
 
         if (record.worktree) {
-          const wtResult = await cleanupWorktree(
-            ctx.cwd,
-            record.worktree,
-            options.description,
-          );
+          await cleanupWorktree(sourceCwd, record.worktree, options.description);
         }
 
         if (options.isBackground) {
@@ -291,8 +267,7 @@ export class AgentManager {
         if (record.status !== "stopped") {
           record.status = "error";
         }
-        record.error =
-          err instanceof Error ? err.message : String(err);
+        record.error = err instanceof Error ? err.message : String(err);
         record.completedAt ??= Date.now();
         detach();
 
@@ -307,11 +282,7 @@ export class AgentManager {
 
         if (record.worktree) {
           try {
-            const wtResult = await cleanupWorktree(
-              ctx.cwd,
-              record.worktree,
-              options.description,
-            );
+            const wtResult = await cleanupWorktree(sourceCwd, record.worktree, options.description);
             record.worktreeResult = wtResult;
             if (wtResult.hasChanges && wtResult.branch) {
               record.error =
@@ -319,13 +290,15 @@ export class AgentManager {
                 `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
             }
             if (wtResult.worktreeError) {
-              record.error =
-                (record.error ?? "") +
-                `\n\n---\n⚠️ ${wtResult.worktreeError}`;
+              record.error = (record.error ?? "") + `\n\n---\n⚠️ ${wtResult.worktreeError}`;
             }
           } catch {
             /* ignore */
           }
+        }
+
+        if (record.outputFile) {
+          appendErrorEntry(record.outputFile, id, record.error, sourceCwd);
         }
 
         if (options.isBackground) {
@@ -340,10 +313,7 @@ export class AgentManager {
   }
 
   private drainQueue() {
-    while (
-      this.queue.length > 0 &&
-      this.runningBackground < this.maxConcurrent
-    ) {
+    while (this.queue.length > 0 && this.runningBackground < this.maxConcurrent) {
       const next = this.queue.shift()!;
       const record = this.agents.get(next.id);
       if (!record || record.status !== "queued") continue;
@@ -351,11 +321,14 @@ export class AgentManager {
         this.startAgent(next.id, record, next.args);
       } catch (err) {
         record.status = "error";
-        record.error =
-          err instanceof Error ? err.message : String(err);
+        record.error = err instanceof Error ? err.message : String(err);
         record.completedAt = Date.now();
         const readyResolve = this.readyResolvers.get(next.id);
-        if (readyResolve) { this.readyResolvers.delete(next.id); record.readyPromise = undefined; readyResolve(); }
+        if (readyResolve) {
+          this.readyResolvers.delete(next.id);
+          record.readyPromise = undefined;
+          readyResolve();
+        }
         this.onComplete?.(record);
       }
     }
@@ -377,11 +350,7 @@ export class AgentManager {
     return record;
   }
 
-  async resume(
-    id: string,
-    prompt: string,
-    signal?: AbortSignal,
-  ): Promise<AgentRecord | undefined> {
+  async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
     if (!record?.session) return undefined;
     if (record.status === "running" || record.status === "waiting") return undefined;
@@ -423,9 +392,7 @@ export class AgentManager {
   }
 
   listAgents(): AgentRecord[] {
-    return [...this.agents.values()].sort(
-      (a, b) => b.startedAt - a.startedAt,
-    );
+    return [...this.agents.values()].sort((a, b) => b.startedAt - a.startedAt);
   }
 
   abort(id: string): boolean {
@@ -437,7 +404,11 @@ export class AgentManager {
       record.status = "stopped";
       record.completedAt = Date.now();
       const readyResolve = this.readyResolvers.get(id);
-      if (readyResolve) { this.readyResolvers.delete(id); record.readyPromise = undefined; readyResolve(); }
+      if (readyResolve) {
+        this.readyResolvers.delete(id);
+        record.readyPromise = undefined;
+        readyResolve();
+      }
       return true;
     }
 
@@ -496,7 +467,11 @@ export class AgentManager {
         record.status = "stopped";
         record.completedAt = Date.now();
         const readyResolve = this.readyResolvers.get(queued.id);
-        if (readyResolve) { this.readyResolvers.delete(queued.id); record.readyPromise = undefined; readyResolve(); }
+        if (readyResolve) {
+          this.readyResolvers.delete(queued.id);
+          record.readyPromise = undefined;
+          readyResolve();
+        }
         count++;
       }
     }
@@ -524,9 +499,7 @@ export class AgentManager {
     while (true) {
       this.drainQueue();
       const pending = [...this.agents.values()]
-        .filter(
-          (r) => r.status === "running" || r.status === "queued" || r.status === "waiting",
-        )
+        .filter((r) => r.status === "running" || r.status === "queued" || r.status === "waiting")
         .map((r) => r.promise)
         .filter(Boolean);
       if (pending.length === 0) break;
@@ -541,6 +514,8 @@ export class AgentManager {
       record.session?.dispose();
     }
     this.agents.clear();
-    pruneWorktrees(process.cwd()).catch(() => { /* ignore */ });
+    pruneWorktrees(process.cwd()).catch(() => {
+      /* ignore */
+    });
   }
 }

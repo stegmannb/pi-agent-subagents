@@ -5,15 +5,7 @@
 import { DEFAULT_AGENTS } from "./default-agents.ts";
 import type { AgentConfig } from "./types.ts";
 
-export const BUILTIN_TOOL_NAMES: string[] = [
-  "read",
-  "bash",
-  "edit",
-  "write",
-  "grep",
-  "find",
-  "ls",
-];
+export const BUILTIN_TOOL_NAMES: string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
 let agents: ReadonlyMap<string, AgentConfig> = new Map();
 
@@ -72,9 +64,7 @@ export function getToolNamesForType(type: string): string[] {
   const key = resolveKey(type);
   const raw = key ? agents.get(key) : undefined;
   const config = raw?.enabled !== false ? raw : undefined;
-  return config?.builtinToolNames?.length
-    ? config.builtinToolNames
-    : [...BUILTIN_TOOL_NAMES];
+  return config?.builtinToolNames?.length ? config.builtinToolNames : [...BUILTIN_TOOL_NAMES];
 }
 
 export function getConfig(type: string): {

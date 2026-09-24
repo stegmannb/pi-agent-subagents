@@ -15,25 +15,9 @@ import {
 
 const MAX_WIDGET_LINES = 12;
 
-export const SPINNER = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-];
+export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const ERROR_STATUSES = new Set([
-  "error",
-  "aborted",
-  "steered",
-  "stopped",
-]);
+const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"]);
 
 const TOOL_DISPLAY: Record<string, string> = {
   read: "reading",
@@ -54,12 +38,7 @@ type UICtx = {
   setStatus(key: string, text: string | undefined): void;
   setWidget(
     key: string,
-    content:
-      | undefined
-      | ((
-          tui: any,
-          theme: Theme,
-        ) => { render(): string[]; invalidate(): void }),
+    content: undefined | ((tui: any, theme: Theme) => { render(): string[]; invalidate(): void }),
     options?: { placement?: "aboveEditor" | "belowEditor" },
   ): void;
 };
@@ -99,11 +78,11 @@ export interface AgentDetails {
   maxTurns?: number;
   agentId?: string;
   error?: string;
+  timedOut?: boolean;
 }
 
 export function formatTokens(count: number): string {
-  if (count >= 1_000_000)
-    return `${(count / 1_000_000).toFixed(1)}M tokens`;
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M tokens`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k tokens`;
   return `${count} ${count === 1 ? "token" : "tokens"}`;
 }
@@ -117,8 +96,7 @@ export function formatSessionTokens(
   const tokenStr = formatTokens(tokens);
   const annot: string[] = [];
   if (percent !== null) {
-    const color =
-      percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim";
+    const color = percent >= 85 ? "error" : percent >= 70 ? "warning" : "dim";
     annot.push(theme.fg(color, `${Math.round(percent)}%`));
   }
   if (compactions > 0) {
@@ -128,23 +106,15 @@ export function formatSessionTokens(
   return `${tokenStr} (${annot.join(" · ")})`;
 }
 
-export function formatTurns(
-  turnCount: number,
-  maxTurns?: number | null,
-): string {
-  return maxTurns != null
-    ? `⟳${turnCount}≤${maxTurns}`
-    : `⟳${turnCount}`;
+export function formatTurns(turnCount: number, maxTurns?: number | null): string {
+  return maxTurns != null ? `⟳${turnCount}≤${maxTurns}` : `⟳${turnCount}`;
 }
 
 export function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function formatDuration(
-  startedAt: number,
-  completedAt?: number,
-): string {
+export function formatDuration(startedAt: number, completedAt?: number): string {
   if (completedAt) return formatMs(completedAt - startedAt);
   return `${formatMs(Date.now() - startedAt)} (running)`;
 }
@@ -153,16 +123,15 @@ export function getDisplayName(type: SubagentType): string {
   return getConfig(type).displayName;
 }
 
-export function getPromptModeLabel(
-  type: SubagentType,
-): string | undefined {
+export function getPromptModeLabel(type: SubagentType): string | undefined {
   const config = getConfig(type);
   return config.promptMode === "append" ? "twin" : undefined;
 }
 
-export function buildInvocationTags(
-  invocation: AgentInvocation | undefined,
-): { modelName?: string; tags: string[] } {
+export function buildInvocationTags(invocation: AgentInvocation | undefined): {
+  modelName?: string;
+  tags: string[];
+} {
   const tags: string[] = [];
   if (!invocation) return { tags };
   if (invocation.thinking) tags.push(`thinking: ${invocation.thinking}`);
@@ -170,8 +139,8 @@ export function buildInvocationTags(
   if (invocation.isolation === "worktree") tags.push("worktree");
   if (invocation.inheritContext) tags.push("inherit context");
   if (invocation.runInBackground) tags.push("background");
-  if (invocation.maxTurns != null)
-    tags.push(`max turns: ${invocation.maxTurns}`);
+  if (invocation.maxTurns != null) tags.push(`max turns: ${invocation.maxTurns}`);
+  if (invocation.timeoutSeconds != null) tags.push(`timeout: ${invocation.timeoutSeconds}s`);
   return { modelName: invocation.modelName, tags };
 }
 
@@ -185,10 +154,7 @@ function truncateLine(text: string, len = 60): string {
   return line.slice(0, len) + "…";
 }
 
-export function describeActivity(
-  activeTools: Map<string, string>,
-  responseText?: string,
-): string {
+export function describeActivity(activeTools: Map<string, string>, responseText?: string): string {
   if (activeTools.size > 0) {
     const groups = new Map<string, number>();
     for (const toolName of activeTools.values()) {
@@ -198,9 +164,7 @@ export function describeActivity(
     const parts: string[] = [];
     for (const [action, count] of groups) {
       if (count > 1) {
-        parts.push(
-          `${action} ${count} ${action === "searching" ? "patterns" : "files"}`,
-        );
+        parts.push(`${action} ${count} ${action === "searching" ? "patterns" : "files"}`);
       } else {
         parts.push(action);
       }
@@ -250,14 +214,9 @@ export class AgentWidget {
     }
   }
 
-  private shouldShowFinished(
-    agentId: string,
-    status: string,
-  ): boolean {
+  private shouldShowFinished(agentId: string, status: string): boolean {
     const age = this.finishedTurnAge.get(agentId) ?? 0;
-    const maxAge = ERROR_STATUSES.has(status)
-      ? AgentWidget.ERROR_LINGER_TURNS
-      : 1;
+    const maxAge = ERROR_STATUSES.has(status) ? AgentWidget.ERROR_LINGER_TURNS : 1;
     return age < maxAge;
   }
 
@@ -277,6 +236,7 @@ export class AgentWidget {
       startedAt: number;
       completedAt?: number;
       error?: string;
+      timedOut?: boolean;
     },
     theme: Theme,
   ): string {
@@ -300,16 +260,13 @@ export class AgentWidget {
       statusText = theme.fg("error", ` error${errMsg}`);
     } else {
       icon = theme.fg("error", "✗");
-      statusText = theme.fg("warning", " aborted");
+      statusText = theme.fg("warning", a.timedOut ? " aborted (timeout)" : " aborted");
     }
 
     const parts: string[] = [];
     const activity = this.agentActivity.get(a.id);
     if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns));
-    if (a.toolUses > 0)
-      parts.push(
-        `${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`,
-      );
+    if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`);
     parts.push(duration);
 
     return `${icon} ${theme.fg("dim", name)}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
@@ -340,13 +297,7 @@ export class AgentWidget {
 
     const finishedLines: string[] = [];
     for (const a of finished) {
-      finishedLines.push(
-        truncate(
-          theme.fg("dim", "├─") +
-            " " +
-            this.renderFinishedLine(a, theme),
-        ),
-      );
+      finishedLines.push(truncate(theme.fg("dim", "├─") + " " + this.renderFinishedLine(a, theme)));
     }
 
     const runningLines: string[][] = [];
@@ -358,21 +309,11 @@ export class AgentWidget {
       const tokens = getLifetimeTotal(bg?.lifetimeUsage);
       const contextPercent = getSessionContextPercent(bg?.session);
       const tokenText =
-        tokens > 0
-          ? formatSessionTokens(
-              tokens,
-              contextPercent,
-              theme,
-              a.compactionCount,
-            )
-          : "";
+        tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : "";
 
       const parts: string[] = [];
       if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns));
-      if (toolUses > 0)
-        parts.push(
-          `${toolUses} tool use${toolUses === 1 ? "" : "s"}`,
-        );
+      if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
       if (tokenText) parts.push(tokenText);
       parts.push(elapsed);
 
@@ -390,8 +331,7 @@ export class AgentWidget {
             ` ${icon} ${theme.bold(name)}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}`,
         ),
         truncate(
-          theme.fg("dim", "│  ") +
-            theme.fg(isWaiting ? "warning" : "dim", `  ⎿  ${activity}`),
+          theme.fg("dim", "│  ") + theme.fg(isWaiting ? "warning" : "dim", `  ⎿  ${activity}`),
         ),
       ]);
     }
@@ -405,17 +345,10 @@ export class AgentWidget {
         : undefined;
 
     const maxBody = MAX_WIDGET_LINES - 1;
-    const totalBody =
-      finishedLines.length +
-      runningLines.length * 2 +
-      (queuedLine ? 1 : 0);
+    const totalBody = finishedLines.length + runningLines.length * 2 + (queuedLine ? 1 : 0);
 
     const lines: string[] = [
-      truncate(
-        theme.fg(headingColor, headingIcon) +
-          " " +
-          theme.fg(headingColor, "Agents"),
-      ),
+      truncate(theme.fg(headingColor, headingIcon) + " " + theme.fg(headingColor, "Agents")),
     ];
 
     if (totalBody <= maxBody) {
@@ -462,10 +395,8 @@ export class AgentWidget {
       }
 
       const overflowParts: string[] = [];
-      if (hiddenRunning > 0)
-        overflowParts.push(`${hiddenRunning} running`);
-      if (hiddenFinished > 0)
-        overflowParts.push(`${hiddenFinished} finished`);
+      if (hiddenRunning > 0) overflowParts.push(`${hiddenRunning} running`);
+      if (hiddenFinished > 0) overflowParts.push(`${hiddenFinished} finished`);
       lines.push(
         truncate(
           theme.fg("dim", "└─") +
@@ -492,10 +423,7 @@ export class AgentWidget {
         waitingCount++;
       } else if (a.status === "queued") {
         queuedCount++;
-      } else if (
-        a.completedAt &&
-        this.shouldShowFinished(a.id, a.status)
-      ) {
+      } else if (a.completedAt && this.shouldShowFinished(a.id, a.status)) {
         hasFinished = true;
       }
     }
@@ -516,8 +444,7 @@ export class AgentWidget {
         this.widgetInterval = undefined;
       }
       for (const [id] of this.finishedTurnAge) {
-        if (!allAgents.some((a) => a.id === id))
-          this.finishedTurnAge.delete(id);
+        if (!allAgents.some((a) => a.id === id)) this.finishedTurnAge.delete(id);
       }
       return;
     }
@@ -525,12 +452,9 @@ export class AgentWidget {
     let newStatusText: string | undefined;
     if (hasActive) {
       const statusParts: string[] = [];
-      if (runningCount > 0)
-        statusParts.push(`${runningCount} running`);
-      if (waitingCount > 0)
-        statusParts.push(`${waitingCount} waiting`);
-      if (queuedCount > 0)
-        statusParts.push(`${queuedCount} queued`);
+      if (runningCount > 0) statusParts.push(`${runningCount} running`);
+      if (waitingCount > 0) statusParts.push(`${waitingCount} waiting`);
+      if (queuedCount > 0) statusParts.push(`${queuedCount} queued`);
       const total = runningCount + waitingCount + queuedCount;
       newStatusText = `${statusParts.join(", ")} agent${total === 1 ? "" : "s"}`;
     }

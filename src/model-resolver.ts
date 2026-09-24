@@ -16,9 +16,7 @@ export interface ModelRegistry {
 
 export function resolveModel(input: string, registry: ModelRegistry): any | string {
   const all = (registry.getAvailable?.() ?? registry.getAll()) as ModelEntry[];
-  const availableSet = new Set(
-    all.map((m) => `${m.provider}/${m.id}`.toLowerCase()),
-  );
+  const availableSet = new Set(all.map((m) => `${m.provider}/${m.id}`.toLowerCase()));
 
   // Exact match
   const slashIdx = input.indexOf("/");
@@ -53,9 +51,7 @@ export function resolveModel(input: string, registry: ModelRegistry): any | stri
         .split(/[\s\-/]+/)
         .every(
           (part) =>
-            id.includes(part) ||
-            name.includes(part) ||
-            m.provider.toLowerCase().includes(part),
+            id.includes(part) || name.includes(part) || m.provider.toLowerCase().includes(part),
         )
     ) {
       score = 20;

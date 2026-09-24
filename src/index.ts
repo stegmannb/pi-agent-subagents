@@ -10,7 +10,7 @@
  *   /agents              — Interactive agent management menu
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   defineTool,
@@ -40,10 +40,17 @@ import {
   resolveType,
 } from "./agent-types.ts";
 import { loadCustomAgents } from "./custom-agents.ts";
+import { DEFAULT_AGENTS } from "./default-agents.ts";
+import { selectAgentList } from "./ui/agent-select.ts";
+import { resolveAgentCwd } from "./cwd.ts";
 import { GroupJoinManager } from "./group-join.ts";
 import { CmuxReporter, isCmuxAvailable } from "./cmux.ts";
-import { resolveAgentInvocationConfig, resolveJoinMode, VALID_THINKING_LEVELS } from "./invocation-config.ts";
-import { type ModelRegistry, resolveModel } from "./model-resolver.ts";
+import {
+  resolveAgentInvocationConfig,
+  resolveJoinMode,
+  VALID_THINKING_LEVELS,
+} from "./invocation-config.ts";
+import { resolveModel } from "./model-resolver.ts";
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.ts";
 import { applyAndEmitLoaded, saveAndEmitChanged, type SubagentsSettings } from "./settings.ts";
 import { SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
@@ -82,7 +89,9 @@ function textResult(msg: string, details?: AgentDetails) {
   };
 }
 
-function formatLifetimeTokens(o: { lifetimeUsage: { input: number; output: number; cacheWrite: number } }): string {
+function formatLifetimeTokens(o: {
+  lifetimeUsage: { input: number; output: number; cacheWrite: number };
+}): string {
   const t = getLifetimeTotal(o.lifetimeUsage);
   return t > 0 ? formatTokens(t) : "";
 }
@@ -104,7 +113,10 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
         state.activeTools.set(activity.toolName + "_" + Date.now(), activity.toolName);
       } else {
         for (const [key, name] of state.activeTools) {
-          if (name === activity.toolName) { state.activeTools.delete(key); break; }
+          if (name === activity.toolName) {
+            state.activeTools.delete(key);
+            break;
+          }
         }
         state.toolUses++;
       }
@@ -130,22 +142,33 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
   return { state, callbacks };
 }
 
-function getStatusLabel(status: string, error?: string): string {
+function getStatusLabel(status: string, error?: string, timedOut?: boolean): string {
   switch (status) {
-    case "error": return `Error: ${error ?? "unknown"}`;
-    case "aborted": return "Aborted (max turns exceeded)";
-    case "steered": return "Wrapped up (turn limit)";
-    case "stopped": return "Stopped";
-    default: return "Done";
+    case "error":
+      return `Error: ${error ?? "unknown"}`;
+    case "aborted":
+      return timedOut ? "Aborted (timeout exceeded)" : "Aborted (max turns exceeded)";
+    case "steered":
+      return "Wrapped up (turn limit)";
+    case "stopped":
+      return "Stopped";
+    default:
+      return "Done";
   }
 }
 
-function getStatusNote(status: string): string {
+function getStatusNote(status: string, timedOut?: boolean): string {
   switch (status) {
-    case "aborted": return " (aborted — max turns exceeded, output may be incomplete)";
-    case "steered": return " (wrapped up — reached turn limit)";
-    case "stopped": return " (stopped by user)";
-    default: return "";
+    case "aborted":
+      return timedOut
+        ? " (aborted — timeout exceeded, output may be incomplete)"
+        : " (aborted — max turns exceeded, output may be incomplete)";
+    case "steered":
+      return " (wrapped up — reached turn limit)";
+    case "stopped":
+      return " (stopped by user)";
+    default:
+      return "";
   }
 }
 
@@ -154,7 +177,7 @@ function escapeXml(s: string): string {
 }
 
 function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
-  const status = getStatusLabel(record.status, record.error);
+  const status = getStatusLabel(record.status, record.error, record.timedOut);
   const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0;
   const totalTokens = getLifetimeTotal(record.lifetimeUsage);
 
@@ -162,7 +185,8 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
   const rawResult = report ? report.summary : record.result;
   const resultPreview = rawResult
     ? rawResult.length > resultMaxLen
-      ? rawResult.slice(0, resultMaxLen) + "\n...(truncated, use get_subagent_result for full output)"
+      ? rawResult.slice(0, resultMaxLen) +
+        "\n...(truncated, use get_subagent_result for full output)"
       : rawResult
     : "No output.";
 
@@ -183,12 +207,24 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
     artifactsLine,
     `<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses><duration_ms>${durationMs}</duration_ms></usage>`,
     `</task-notification>`,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function buildDetails(
   base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
-  record: { toolUses: number; startedAt: number; completedAt?: number; status: string; error?: string; id?: string; session?: any; lifetimeUsage: { input: number; output: number; cacheWrite: number } },
+  record: {
+    toolUses: number;
+    startedAt: number;
+    completedAt?: number;
+    status: string;
+    error?: string;
+    id?: string;
+    session?: any;
+    timedOut?: boolean;
+    lifetimeUsage: { input: number; output: number; cacheWrite: number };
+  },
   activity?: AgentActivity,
   overrides?: Partial<AgentDetails>,
 ): AgentDetails {
@@ -202,11 +238,16 @@ function buildDetails(
     status: record.status as AgentDetails["status"],
     agentId: record.id,
     error: record.error,
+    timedOut: record.timedOut,
     ...overrides,
   };
 }
 
-function buildNotificationDetails(record: AgentRecord, resultMaxLen: number, activity?: AgentActivity): NotificationDetails {
+function buildNotificationDetails(
+  record: AgentRecord,
+  resultMaxLen: number,
+  activity?: AgentActivity,
+): NotificationDetails {
   const totalTokens = getLifetimeTotal(record.lifetimeUsage);
   const report = record.completionReport;
   const rawResult = report ? report.summary : record.result;
@@ -277,7 +318,8 @@ export default function (pi: ExtensionAPI) {
         if (d.totalTokens > 0) parts.push(formatTokens(d.totalTokens));
         if (d.durationMs > 0) parts.push(formatMs(d.durationMs));
         if (parts.length) {
-          line += "\n  " + parts.map(p => theme.fg("dim", p)).join(" " + theme.fg("dim", "·") + " ");
+          line +=
+            "\n  " + parts.map((p) => theme.fg("dim", p)).join(" " + theme.fg("dim", "·") + " ");
         }
 
         if (expanded) {
@@ -304,30 +346,26 @@ export default function (pi: ExtensionAPI) {
   );
 
   // ---- Ping (request_help) notification renderer ----
-  pi.registerMessageRenderer<HelpRequestDetails>(
-    "subagent-ping",
-    (message, _opts, theme) => {
-      const d = message.details;
-      if (!d) return undefined;
-      const line =
-        theme.fg("warning", "⏸") +
-        " " +
-        theme.bold(d.description) +
-        " " +
-        theme.fg("warning", "needs help") +
-        "\n  " +
-        theme.fg("dim", d.message) +
-        "\n  " +
-        theme.fg("dim", `Use steer_subagent("${d.agentId}", "<response>") to reply.`);
-      return new Text(line, 0, 0);
-    },
-  );
+  pi.registerMessageRenderer<HelpRequestDetails>("subagent-ping", (message, _opts, theme) => {
+    const d = message.details;
+    if (!d) return undefined;
+    const line =
+      theme.fg("warning", "⏸") +
+      " " +
+      theme.bold(d.description) +
+      " " +
+      theme.fg("warning", "needs help") +
+      "\n  " +
+      theme.fg("dim", d.message) +
+      "\n  " +
+      theme.fg("dim", `Use steer_subagent("${d.agentId}", "<response>") to reply.`);
+    return new Text(line, 0, 0);
+  });
 
   // ---- Agent state ----
 
   const agentDirsExist = () =>
-    existsSync(join(process.cwd(), ".pi", "agents")) ||
-    existsSync(join(getAgentDir(), "agents"));
+    existsSync(join(process.cwd(), ".pi", "agents")) || existsSync(join(getAgentDir(), "agents"));
 
   const reloadCustomAgents = () => {
     const userAgents = loadCustomAgents(process.cwd());
@@ -343,10 +381,17 @@ export default function (pi: ExtensionAPI) {
 
   function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
     cancelNudge(key);
-    pendingNudges.set(key, setTimeout(() => {
-      pendingNudges.delete(key);
-      try { send(); } catch { /* ignore */ }
-    }, delay));
+    pendingNudges.set(
+      key,
+      setTimeout(() => {
+        pendingNudges.delete(key);
+        try {
+          send();
+        } catch {
+          /* ignore */
+        }
+      }, delay),
+    );
   }
 
   function cancelNudge(key: string) {
@@ -362,12 +407,15 @@ export default function (pi: ExtensionAPI) {
     const notification = formatTaskNotification(record, 500);
     const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : "";
 
-    pi.sendMessage<NotificationDetails>({
-      customType: "subagent-notification",
-      content: notification + footer,
-      display: true,
-      details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
-    }, { deliverAs: "followUp", triggerTurn: true });
+    pi.sendMessage<NotificationDetails>(
+      {
+        customType: "subagent-notification",
+        content: notification + footer,
+        display: true,
+        details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   }
 
   function sendIndividualNudge(record: AgentRecord) {
@@ -378,39 +426,45 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ---- Group join ----
-  const groupJoin = new GroupJoinManager(
-    (records, partial, isStraggler) => {
-      for (const r of records) { agentActivity.delete(r.id); widget.markFinished(r.id); }
+  const groupJoin = new GroupJoinManager((records, partial, isStraggler) => {
+    for (const r of records) {
+      agentActivity.delete(r.id);
+      widget.markFinished(r.id);
+    }
 
-      const groupKey = `group:${records.map(r => r.id).join(",")}`;
-      scheduleNudge(groupKey, () => {
-        const unconsumed = records.filter(r => !r.resultConsumed);
-        if (unconsumed.length === 0) { widget.update(); return; }
+    const groupKey = `group:${records.map((r) => r.id).join(",")}`;
+    scheduleNudge(groupKey, () => {
+      const unconsumed = records.filter((r) => !r.resultConsumed);
+      if (unconsumed.length === 0) {
+        widget.update();
+        return;
+      }
 
-        const notifications = unconsumed.map(r => formatTaskNotification(r, 300)).join("\n\n");
-        const label = isStraggler
-          ? `${unconsumed.length} straggler(s) finished`
-          : partial
-            ? `${unconsumed.length} agent(s) finished (partial — others still running)`
-            : `${unconsumed.length} agent(s) finished`;
+      const notifications = unconsumed.map((r) => formatTaskNotification(r, 300)).join("\n\n");
+      const label = isStraggler
+        ? `${unconsumed.length} straggler(s) finished`
+        : partial
+          ? `${unconsumed.length} agent(s) finished (partial — others still running)`
+          : `${unconsumed.length} agent(s) finished`;
 
-        const [first, ...rest] = unconsumed;
-        const details = buildNotificationDetails(first!, 300, agentActivity.get(first!.id));
-        if (rest.length > 0) {
-          details.others = rest.map(r => buildNotificationDetails(r, 300, agentActivity.get(r.id)));
-        }
+      const [first, ...rest] = unconsumed;
+      const details = buildNotificationDetails(first!, 300, agentActivity.get(first!.id));
+      if (rest.length > 0) {
+        details.others = rest.map((r) => buildNotificationDetails(r, 300, agentActivity.get(r.id)));
+      }
 
-        pi.sendMessage<NotificationDetails>({
+      pi.sendMessage<NotificationDetails>(
+        {
           customType: "subagent-notification",
           content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
           display: true,
           details,
-        }, { deliverAs: "followUp", triggerTurn: true });
-      });
-      widget.update();
-    },
-    30_000,
-  );
+        },
+        { deliverAs: "followUp", triggerTurn: true },
+      );
+    });
+    widget.update();
+  }, 30_000);
 
   // ---- Batch tracking ----
   let currentBatchAgents: { id: string; joinMode: JoinMode }[] = [];
@@ -422,10 +476,10 @@ export default function (pi: ExtensionAPI) {
     const batchAgents = [...currentBatchAgents];
     currentBatchAgents = [];
 
-    const smartAgents = batchAgents.filter(a => a.joinMode === "smart" || a.joinMode === "group");
+    const smartAgents = batchAgents.filter((a) => a.joinMode === "smart" || a.joinMode === "group");
     if (smartAgents.length >= 2) {
       const groupId = `batch-${++batchCounter}`;
-      const ids = smartAgents.map(a => a.id);
+      const ids = smartAgents.map((a) => a.id);
       groupJoin.registerGroup(groupId, ids);
       for (const id of ids) {
         const record = manager.getRecord(id);
@@ -448,7 +502,9 @@ export default function (pi: ExtensionAPI) {
   // ---- Manager + widget ----
 
   function buildEventData(record: AgentRecord) {
-    const durationMs = record.completedAt ? record.completedAt - record.startedAt : Date.now() - record.startedAt;
+    const durationMs = record.completedAt
+      ? record.completedAt - record.startedAt
+      : Date.now() - record.startedAt;
     const u = record.lifetimeUsage;
     const total = getLifetimeTotal(u);
     const tokens = total > 0 ? { input: u.input, output: u.output, total } : undefined;
@@ -467,70 +523,89 @@ export default function (pi: ExtensionAPI) {
 
   const cmux = new CmuxReporter({ enabled: false, lingerMs: 5000 });
 
-  const manager = new AgentManager((record) => {
-    const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
-    const eventData = buildEventData(record);
-    if (isError) {
-      pi.events.emit("subagents:failed", eventData);
-    } else {
-      pi.events.emit("subagents:completed", eventData);
-    }
+  const manager = new AgentManager(
+    (record) => {
+      const isError =
+        record.status === "error" || record.status === "stopped" || record.status === "aborted";
+      const eventData = buildEventData(record);
+      if (isError) {
+        pi.events.emit("subagents:failed", eventData);
+      } else {
+        pi.events.emit("subagents:completed", eventData);
+      }
 
-    pi.appendEntry("subagents:record", {
-      id: record.id, type: record.type, description: record.description,
-      status: record.status, result: record.result, error: record.error,
-      startedAt: record.startedAt, completedAt: record.completedAt,
-    });
+      pi.appendEntry("subagents:record", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+        status: record.status,
+        result: record.result,
+        error: record.error,
+        startedAt: record.startedAt,
+        completedAt: record.completedAt,
+      });
 
-    if (record.resultConsumed) {
-      agentActivity.delete(record.id);
-      widget.markFinished(record.id);
+      if (record.resultConsumed) {
+        agentActivity.delete(record.id);
+        widget.markFinished(record.id);
+        widget.update();
+        return;
+      }
+
+      if (currentBatchAgents.some((a) => a.id === record.id)) {
+        widget.update();
+        return;
+      }
+
+      const result = groupJoin.onAgentComplete(record);
+      if (result === "pass") {
+        sendIndividualNudge(record);
+      }
+      const runningAfter = manager
+        .listAgents()
+        .filter(
+          (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
+        ).length;
+      cmux.onAgentComplete(record.description, record.status, runningAfter);
       widget.update();
-      return;
-    }
-
-    if (currentBatchAgents.some(a => a.id === record.id)) {
-      widget.update();
-      return;
-    }
-
-    const result = groupJoin.onAgentComplete(record);
-    if (result === "pass") {
-      sendIndividualNudge(record);
-    }
-    const runningAfter = manager.listAgents().filter(
-      (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
-    ).length;
-    cmux.onAgentComplete(record.description, record.status, runningAfter);
-    widget.update();
-  }, undefined, (record) => {
-    pi.events.emit("subagents:started", {
-      id: record.id,
-      type: record.type,
-      description: record.description,
-    });
-    const runningNow = manager.listAgents().filter(
-      (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
-    ).length;
-    cmux.onAgentStart(record.description, runningNow);
-  }, (record, info) => {
-    pi.events.emit("subagents:compacted", {
-      id: record.id,
-      type: record.type,
-      description: record.description,
-      reason: info.reason,
-      tokensBefore: info.tokensBefore,
-      compactionCount: record.compactionCount,
-    });
-  });
+    },
+    undefined,
+    (record) => {
+      pi.events.emit("subagents:started", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+      });
+      const runningNow = manager
+        .listAgents()
+        .filter(
+          (a) => a.status === "running" || a.status === "waiting" || a.status === "queued",
+        ).length;
+      cmux.onAgentStart(record.description, runningNow);
+    },
+    (record, info) => {
+      pi.events.emit("subagents:compacted", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+        reason: info.reason,
+        tokensBefore: info.tokensBefore,
+        compactionCount: record.compactionCount,
+      });
+    },
+  );
 
   let currentCtx: ExtensionContext | undefined;
   const widget = new AgentWidget(manager, agentActivity);
 
   // ---- Join mode ----
   let defaultJoinMode: JoinMode = "smart";
-  function getDefaultJoinMode(): JoinMode { return defaultJoinMode; }
-  function setDefaultJoinMode(mode: JoinMode) { defaultJoinMode = mode; }
+  function getDefaultJoinMode(): JoinMode {
+    return defaultJoinMode;
+  }
+  function setDefaultJoinMode(mode: JoinMode) {
+    defaultJoinMode = mode;
+  }
 
   // ---- Session lifecycle ----
 
@@ -542,6 +617,7 @@ export default function (pi: ExtensionAPI) {
       {
         setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
         setDefaultMaxTurns: (n) => manager.setDefaultMaxTurns(n),
+        setDefaultTimeoutSeconds: (n) => manager.setDefaultTimeoutSeconds(n),
         setGraceTurns: (n) => manager.setGraceTurns(n),
         setDefaultJoinMode,
         setCmuxIntegration: (enabled) => cmux.updateOptions({ enabled }),
@@ -565,7 +641,9 @@ export default function (pi: ExtensionAPI) {
         description: payload.description ?? payload.type,
         isBackground: true,
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   });
 
   const unsubStop = pi.events.on("subagents:rpc:stop", (payload: any) => {
@@ -622,15 +700,17 @@ export default function (pi: ExtensionAPI) {
 
   // ---- Agent tool ----
 
-  pi.registerTool(defineTool({
-    name: "Agent",
-    label: "Agent",
-    description: `Launch a new agent to handle complex, multi-step tasks autonomously.
+  pi.registerTool(
+    defineTool({
+      name: "Agent",
+      label: "Agent",
+      description: `Launch a new agent to handle complex, multi-step tasks autonomously.
 
 Available agent types:
 ${typeListText}
 
 Guidelines:
+- Only spawn a subagent for complex, multi-step work that benefits from a separate context. Do not spawn one for a short action you can do yourself (append a note, record a memory, run one command, read a file).
 - For parallel work, use run_in_background: true on each agent.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
@@ -639,425 +719,606 @@ Guidelines:
 - Use run_in_background for work you don't need immediately.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
-- Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").`,
-    parameters: Type.Object({
-      prompt: Type.String({ description: "The task for the agent to perform." }),
-      description: Type.String({ description: "A short (3-5 word) description of the task (shown in UI)." }),
-      subagent_type: Type.String({ description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}.` }),
-      model: Type.Optional(Type.String({ description: 'Optional model override. Accepts "provider/modelId" or fuzzy name (e.g. "haiku", "sonnet").' })),
-      thinking: Type.Optional(Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh." })),
-      max_turns: Type.Optional(Type.Number({ description: "Maximum agentic turns before stopping.", minimum: 1 })),
-      run_in_background: Type.Optional(Type.Boolean({ description: "Set to true to run in background." })),
-      resume: Type.Optional(Type.String({ description: "Optional agent ID to resume from." })),
-      isolated: Type.Optional(Type.Boolean({ description: "If true, agent gets no extension/MCP tools." })),
-      inherit_context: Type.Optional(Type.Boolean({ description: "If true, fork parent conversation into the agent." })),
-      isolation: Type.Optional(Type.Literal("worktree", { description: 'Set to "worktree" to run in a temporary git worktree.' })),
-    }),
+- Set cwd to the git repository the agent should work in whenever the parent session cwd is a workspace, a parent folder, or otherwise not that repository. Workspace folders with nested repos are common.
+- Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
+- Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD.
+- Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
+- Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
+- Use timeout_seconds to bound wall-clock runtime for agents that might hang or run too long; the agent is aborted once the limit is reached, independent of turn count.`,
+      parameters: Type.Object({
+        prompt: Type.String({ description: "The task for the agent to perform." }),
+        description: Type.String({
+          description: "A short (3-5 word) description of the task (shown in UI).",
+        }),
+        subagent_type: Type.String({
+          description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}.`,
+        }),
+        model: Type.Optional(
+          Type.String({
+            description:
+              'Optional model override. Accepts "provider/modelId" or fuzzy name (e.g. "haiku", "sonnet").',
+          }),
+        ),
+        thinking: Type.Optional(
+          Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh." }),
+        ),
+        max_turns: Type.Optional(
+          Type.Number({ description: "Maximum agentic turns before stopping.", minimum: 1 }),
+        ),
+        timeout_seconds: Type.Optional(
+          Type.Number({
+            description:
+              "Wall-clock timeout in seconds; the agent is aborted if it runs longer than this, regardless of turn count.",
+            minimum: 1,
+          }),
+        ),
+        run_in_background: Type.Optional(
+          Type.Boolean({ description: "Set to true to run in background." }),
+        ),
+        resume: Type.Optional(Type.String({ description: "Optional agent ID to resume from." })),
+        isolated: Type.Optional(
+          Type.Boolean({ description: "If true, agent gets no extension/MCP tools." }),
+        ),
+        inherit_context: Type.Optional(
+          Type.Boolean({ description: "If true, fork parent conversation into the agent." }),
+        ),
+        cwd: Type.Optional(
+          Type.String({
+            description:
+              "Git repository the agent should run in. Relative paths resolve from the parent session cwd. Set this whenever the session cwd is not that repository (nested repos, workspace folders). Required for isolation: worktree.",
+          }),
+        ),
+        isolation: Type.Optional(
+          Type.Literal("worktree", {
+            description:
+              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a temporary worktree from HEAD. Omit only if cwd is not a git repo, has no commits, or the agent must see uncommitted/untracked files.',
+          }),
+        ),
+      }),
 
-    renderCall(args, theme) {
-      const displayName = args.subagent_type ? getDisplayName(args.subagent_type) : "Agent";
-      const desc = args.description ?? "";
-      return new Text("▸ " + theme.fg("toolTitle", theme.bold(displayName)) + (desc ? "  " + theme.fg("muted", desc) : ""), 0, 0);
-    },
+      renderCall(args, theme) {
+        const displayName = args.subagent_type ? getDisplayName(args.subagent_type) : "Agent";
+        const desc = args.description ?? "";
+        return new Text(
+          "▸ " +
+            theme.fg("toolTitle", theme.bold(displayName)) +
+            (desc ? "  " + theme.fg("muted", desc) : ""),
+          0,
+          0,
+        );
+      },
 
-    renderResult(result, { expanded, isPartial }, theme) {
-      const details = result.details as AgentDetails | undefined;
-      if (!details) {
-        const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-        return new Text(text, 0, 0);
-      }
+      renderResult(result, { expanded, isPartial }, theme) {
+        const details = result.details as AgentDetails | undefined;
+        if (!details) {
+          const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+          return new Text(text, 0, 0);
+        }
 
-      const stats = (d: AgentDetails) => {
-        const parts: string[] = [];
-        if (d.modelName) parts.push(d.modelName);
-        if (d.tags) parts.push(...d.tags);
-        if (d.turnCount != null && d.turnCount > 0) parts.push(formatTurns(d.turnCount, d.maxTurns));
-        if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`);
-        if (d.tokens) parts.push(d.tokens);
-        return parts.map(p => theme.fg("dim", p)).join(" " + theme.fg("dim", "·") + " ");
-      };
+        const stats = (d: AgentDetails) => {
+          const parts: string[] = [];
+          if (d.modelName) parts.push(d.modelName);
+          if (d.tags) parts.push(...d.tags);
+          if (d.turnCount != null && d.turnCount > 0)
+            parts.push(formatTurns(d.turnCount, d.maxTurns));
+          if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`);
+          if (d.tokens) parts.push(d.tokens);
+          return parts.map((p) => theme.fg("dim", p)).join(" " + theme.fg("dim", "·") + " ");
+        };
 
-      if (isPartial || details.status === "running") {
-        const frame = SPINNER[details.spinnerFrame ?? 0];
-        const s = stats(details);
-        let line = theme.fg("accent", frame) + (s ? " " + s : "");
-        line += "\n" + theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`);
-        return new Text(line, 0, 0);
-      }
+        if (isPartial || details.status === "running") {
+          const frame = SPINNER[details.spinnerFrame ?? 0];
+          const s = stats(details);
+          let line = theme.fg("accent", frame) + (s ? " " + s : "");
+          line += "\n" + theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`);
+          return new Text(line, 0, 0);
+        }
 
-      if (details.status === "background") {
-        return new Text(theme.fg("dim", `  ⎿  Running in background (ID: ${details.agentId})`), 0, 0);
-      }
+        if (details.status === "background") {
+          return new Text(
+            theme.fg("dim", `  ⎿  Running in background (ID: ${details.agentId})`),
+            0,
+            0,
+          );
+        }
 
-      if (details.status === "completed" || details.status === "steered") {
-        const duration = formatMs(details.durationMs);
-        const icon = details.status === "steered" ? theme.fg("warning", "✓") : theme.fg("success", "✓");
-        const s = stats(details);
-        let line = icon + (s ? " " + s : "");
-        line += " " + theme.fg("dim", "·") + " " + theme.fg("dim", duration);
+        if (details.status === "completed" || details.status === "steered") {
+          const duration = formatMs(details.durationMs);
+          const icon =
+            details.status === "steered" ? theme.fg("warning", "✓") : theme.fg("success", "✓");
+          const s = stats(details);
+          let line = icon + (s ? " " + s : "");
+          line += " " + theme.fg("dim", "·") + " " + theme.fg("dim", duration);
 
-        if (expanded) {
-          const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
-          if (resultText) {
-            const lines = resultText.split("\n").slice(0, 50);
-            for (const l of lines) line += "\n" + theme.fg("dim", `  ${l}`);
+          if (expanded) {
+            const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
+            if (resultText) {
+              const lines = resultText.split("\n").slice(0, 50);
+              for (const l of lines) line += "\n" + theme.fg("dim", `  ${l}`);
+            }
+          } else {
+            const doneText = details.status === "steered" ? "Wrapped up (turn limit)" : "Done";
+            line += "\n" + theme.fg("dim", `  ⎿  ${doneText}`);
           }
-        } else {
-          const doneText = details.status === "steered" ? "Wrapped up (turn limit)" : "Done";
-          line += "\n" + theme.fg("dim", `  ⎿  ${doneText}`);
+          return new Text(line, 0, 0);
         }
-        return new Text(line, 0, 0);
-      }
 
-      if (details.status === "stopped") {
+        if (details.status === "stopped") {
+          const s = stats(details);
+          let line = theme.fg("dim", "■") + (s ? " " + s : "");
+          line += "\n" + theme.fg("dim", "  ⎿  Stopped");
+          return new Text(line, 0, 0);
+        }
+
         const s = stats(details);
-        let line = theme.fg("dim", "■") + (s ? " " + s : "");
-        line += "\n" + theme.fg("dim", "  ⎿  Stopped");
-        return new Text(line, 0, 0);
-      }
-
-      const s = stats(details);
-      let line = theme.fg("error", "✗") + (s ? " " + s : "");
-      if (details.status === "error") {
-        line += "\n" + theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`);
-      } else {
-        line += "\n" + theme.fg("warning", "  ⎿  Aborted (max turns exceeded)");
-      }
-      return new Text(line, 0, 0);
-    },
-
-    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      widget.setUICtx(ctx.ui as any);
-      if (agentDirsExist()) reloadCustomAgents();
-
-      const rawType = params.subagent_type as SubagentType;
-      const resolved = resolveType(rawType);
-      const subagentType = resolved ?? "general-purpose";
-      const fellBack = resolved === undefined;
-      const displayName = getDisplayName(subagentType);
-      const customConfig = getAgentConfig(subagentType);
-
-      if (params.thinking && !VALID_THINKING_LEVELS.has(params.thinking)) {
-        return textResult(`Invalid thinking level "${params.thinking}". Allowed: ${[...VALID_THINKING_LEVELS].join(", ")}.`);
-      }
-
-      const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
-
-      let model = ctx.model;
-      if (resolvedConfig.modelInput) {
-        const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
-        if (typeof resolvedModel === "string") {
-          if (resolvedConfig.modelFromParams) return textResult(resolvedModel);
+        let line = theme.fg("error", "✗") + (s ? " " + s : "");
+        if (details.status === "error") {
+          line += "\n" + theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`);
         } else {
-          model = resolvedModel;
+          line +=
+            "\n" +
+            theme.fg(
+              "warning",
+              `  ⎿  ${details.timedOut ? "Aborted (timeout exceeded)" : "Aborted (max turns exceeded)"}`,
+            );
         }
-      }
+        return new Text(line, 0, 0);
+      },
 
-      const thinking = resolvedConfig.thinking;
-      const inheritContext = resolvedConfig.inheritContext;
-      const runInBackground = resolvedConfig.runInBackground;
-      const isolated = resolvedConfig.isolated;
-      const isolation = resolvedConfig.isolation;
+      execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+        widget.setUICtx(ctx.ui as any);
+        if (agentDirsExist()) reloadCustomAgents();
 
-      const parentModelId = ctx.model?.id;
-      const effectiveModelId = model?.id;
-      const modelName = effectiveModelId && effectiveModelId !== parentModelId
-        ? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
-        : undefined;
-      const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? manager.getDefaultMaxTurns());
-      const agentInvocation: AgentInvocation = {
-        modelName, thinking, maxTurns: normalizeMaxTurns(resolvedConfig.maxTurns),
-        isolated, inheritContext, runInBackground, isolation,
-      };
-      const { tags: invocationTags } = buildInvocationTags(agentInvocation);
-      const modeLabel = getPromptModeLabel(subagentType);
-      const agentTags = modeLabel ? [modeLabel, ...invocationTags] : invocationTags;
-      const detailBase = { displayName, description: params.description, subagentType, modelName, tags: agentTags.length > 0 ? agentTags : undefined };
+        const rawType = params.subagent_type as SubagentType;
+        const resolved = resolveType(rawType);
+        const subagentType = resolved ?? "general-purpose";
+        const fellBack = resolved === undefined;
+        const displayName = getDisplayName(subagentType);
+        const customConfig = getAgentConfig(subagentType);
 
-      // Resume
-      if (params.resume) {
-        const existing = manager.getRecord(params.resume);
-        if (!existing) return textResult(`Agent not found: "${params.resume}".`);
-        if (!existing.session) return textResult(`Agent "${params.resume}" has no active session to resume.`);
-        const record = await manager.resume(params.resume, params.prompt, signal);
-        if (!record) return textResult(`Failed to resume agent "${params.resume}".`);
-        return textResult(record.result?.trim() || record.error?.trim() || "No output.", buildDetails(detailBase, record));
-      }
+        if (params.thinking && !VALID_THINKING_LEVELS.has(params.thinking)) {
+          return textResult(
+            `Invalid thinking level "${params.thinking}". Allowed: ${[...VALID_THINKING_LEVELS].join(", ")}.`,
+          );
+        }
 
-      // Background
-      if (runInBackground) {
-        const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns);
+        const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
 
-        let id: string;
-        const origBgOnSession = bgCallbacks.onSessionCreated;
-        bgCallbacks.onSessionCreated = (session: any) => {
-          origBgOnSession(session);
-          const rec = manager.getRecord(id);
-          if (rec?.outputFile) {
-            rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd);
+        let model = ctx.model;
+        if (resolvedConfig.modelInput) {
+          const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
+          if (typeof resolvedModel === "string") {
+            if (resolvedConfig.modelFromParams) return textResult(resolvedModel);
+          } else {
+            model = resolvedModel;
+          }
+        }
+
+        const thinking = resolvedConfig.thinking;
+        const inheritContext = resolvedConfig.inheritContext;
+        const runInBackground = resolvedConfig.runInBackground;
+        const isolated = resolvedConfig.isolated;
+        const isolation = resolvedConfig.isolation;
+        const agentCwd = resolveAgentCwd(ctx.cwd, params.cwd);
+        if (!params.resume) {
+          try {
+            if (!statSync(agentCwd).isDirectory()) {
+              return textResult(`Agent cwd is not a directory: ${agentCwd}`);
+            }
+          } catch {
+            return textResult(`Agent cwd does not exist or is not accessible: ${agentCwd}`);
+          }
+        }
+
+        const parentModelId = ctx.model?.id;
+        const effectiveModelId = model?.id;
+        const modelName =
+          effectiveModelId && effectiveModelId !== parentModelId
+            ? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
+            : undefined;
+        const effectiveMaxTurns = normalizeMaxTurns(
+          resolvedConfig.maxTurns ?? manager.getDefaultMaxTurns(),
+        );
+        const effectiveTimeoutSeconds =
+          resolvedConfig.timeoutSeconds ?? manager.getDefaultTimeoutSeconds();
+        const agentInvocation: AgentInvocation = {
+          modelName,
+          thinking,
+          maxTurns: normalizeMaxTurns(resolvedConfig.maxTurns),
+          timeoutSeconds: effectiveTimeoutSeconds,
+          isolated,
+          inheritContext,
+          runInBackground,
+          isolation,
+          cwd: agentCwd,
+        };
+        const { tags: invocationTags } = buildInvocationTags(agentInvocation);
+        const modeLabel = getPromptModeLabel(subagentType);
+        const agentTags = modeLabel ? [modeLabel, ...invocationTags] : invocationTags;
+        const detailBase = {
+          displayName,
+          description: params.description,
+          subagentType,
+          modelName,
+          tags: agentTags.length > 0 ? agentTags : undefined,
+        };
+
+        // Resume
+        if (params.resume) {
+          const existing = manager.getRecord(params.resume);
+          if (!existing) return textResult(`Agent not found: "${params.resume}".`);
+          if (!existing.session)
+            return textResult(`Agent "${params.resume}" has no active session to resume.`);
+          const record = await manager.resume(params.resume, params.prompt, signal);
+          if (!record) return textResult(`Failed to resume agent "${params.resume}".`);
+          return textResult(
+            record.result?.trim() || record.error?.trim() || "No output.",
+            buildDetails(detailBase, record),
+          );
+        }
+
+        // Background
+        if (runInBackground) {
+          const { state: bgState, callbacks: bgCallbacks } =
+            createActivityTracker(effectiveMaxTurns);
+
+          let id: string;
+          const origBgOnSession = bgCallbacks.onSessionCreated;
+          bgCallbacks.onSessionCreated = (session: any) => {
+            origBgOnSession(session);
+            const rec = manager.getRecord(id);
+            if (rec?.outputFile) {
+              rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, agentCwd);
+            }
+          };
+
+          try {
+            id = manager.spawn(pi, ctx, subagentType, params.prompt, {
+              description: params.description,
+              model,
+              maxTurns: effectiveMaxTurns,
+              timeoutSeconds: effectiveTimeoutSeconds,
+              isolated,
+              inheritContext,
+              thinkingLevel: thinking,
+              isBackground: true,
+              isolation,
+              cwd: agentCwd,
+              invocation: agentInvocation,
+              ...bgCallbacks,
+            });
+          } catch (err) {
+            return textResult(err instanceof Error ? err.message : String(err));
+          }
+
+          const joinMode = resolveJoinMode(defaultJoinMode, true);
+          const record = manager.getRecord(id);
+          if (record && joinMode) {
+            record.joinMode = joinMode;
+            record.toolCallId = toolCallId;
+            record.outputFile = createOutputFilePath(
+              agentCwd,
+              id,
+              ctx.sessionManager.getSessionId(),
+            );
+            writeInitialEntry(record.outputFile, id, params.prompt, agentCwd);
+          }
+
+          if (joinMode != null && joinMode !== "async") {
+            currentBatchAgents.push({ id, joinMode });
+            if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer);
+            batchFinalizeTimer = setTimeout(finalizeBatch, 100);
+          }
+
+          agentActivity.set(id, bgState);
+          widget.ensureTimer();
+          widget.update();
+
+          pi.events.emit("subagents:created", {
+            id,
+            type: subagentType,
+            description: params.description,
+            isBackground: true,
+          });
+
+          const isQueued = record?.status === "queued";
+          return textResult(
+            `Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n` +
+              (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
+              (isQueued
+                ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n`
+                : "") +
+              `\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
+            {
+              ...detailBase,
+              toolUses: 0,
+              tokens: "",
+              durationMs: 0,
+              status: "background" as const,
+              agentId: id,
+            },
+          );
+        }
+
+        // Foreground
+        let spinnerFrame = 0;
+        const startedAt = Date.now();
+        let fgId: string | undefined;
+
+        const streamUpdate = () => {
+          const details: AgentDetails = {
+            ...detailBase,
+            toolUses: fgState.toolUses,
+            tokens: formatLifetimeTokens(fgState),
+            turnCount: fgState.turnCount,
+            maxTurns: fgState.maxTurns,
+            durationMs: Date.now() - startedAt,
+            status: "running",
+            activity: describeActivity(fgState.activeTools, fgState.responseText),
+            spinnerFrame: spinnerFrame % SPINNER.length,
+          };
+          onUpdate?.({
+            content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
+            details: details as any,
+          });
+        };
+
+        const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(
+          effectiveMaxTurns,
+          streamUpdate,
+        );
+
+        const origOnSession = fgCallbacks.onSessionCreated;
+        fgCallbacks.onSessionCreated = (session: any) => {
+          origOnSession(session);
+          for (const a of manager.listAgents()) {
+            if (a.session === session) {
+              fgId = a.id;
+              agentActivity.set(a.id, fgState);
+              widget.ensureTimer();
+              break;
+            }
           }
         };
 
+        const spinnerInterval = setInterval(() => {
+          spinnerFrame++;
+          streamUpdate();
+        }, 80);
+        streamUpdate();
+
+        let record: AgentRecord;
         try {
-          id = manager.spawn(pi, ctx, subagentType, params.prompt, {
-            description: params.description, model, maxTurns: effectiveMaxTurns,
-            isolated, inheritContext, thinkingLevel: thinking,
-            isBackground: true, isolation, invocation: agentInvocation, ...bgCallbacks,
+          record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
+            description: params.description,
+            model,
+            maxTurns: effectiveMaxTurns,
+            timeoutSeconds: effectiveTimeoutSeconds,
+            isolated,
+            inheritContext,
+            thinkingLevel: thinking,
+            isolation,
+            cwd: agentCwd,
+            invocation: agentInvocation,
+            signal,
+            ...fgCallbacks,
           });
         } catch (err) {
+          clearInterval(spinnerInterval);
           return textResult(err instanceof Error ? err.message : String(err));
         }
 
-        const joinMode = resolveJoinMode(defaultJoinMode, true);
-        const record = manager.getRecord(id);
-        if (record && joinMode) {
-          record.joinMode = joinMode;
-          record.toolCallId = toolCallId;
-          record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId());
-          writeInitialEntry(record.outputFile, id, params.prompt, ctx.cwd);
-        }
-
-        if (joinMode != null && joinMode !== "async") {
-          currentBatchAgents.push({ id, joinMode });
-          if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer);
-          batchFinalizeTimer = setTimeout(finalizeBatch, 100);
-        }
-
-        agentActivity.set(id, bgState);
-        widget.ensureTimer();
-        widget.update();
-
-        pi.events.emit("subagents:created", { id, type: subagentType, description: params.description, isBackground: true });
-
-        const isQueued = record?.status === "queued";
-        return textResult(
-          `Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n` +
-          (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
-          (isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : "") +
-          `\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
-          { ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
-        );
-      }
-
-      // Foreground
-      let spinnerFrame = 0;
-      const startedAt = Date.now();
-      let fgId: string | undefined;
-
-      const streamUpdate = () => {
-        const details: AgentDetails = {
-          ...detailBase,
-          toolUses: fgState.toolUses,
-          tokens: formatLifetimeTokens(fgState),
-          turnCount: fgState.turnCount,
-          maxTurns: fgState.maxTurns,
-          durationMs: Date.now() - startedAt,
-          status: "running",
-          activity: describeActivity(fgState.activeTools, fgState.responseText),
-          spinnerFrame: spinnerFrame % SPINNER.length,
-        };
-        onUpdate?.({ content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }], details: details as any });
-      };
-
-      const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(effectiveMaxTurns, streamUpdate);
-
-      const origOnSession = fgCallbacks.onSessionCreated;
-      fgCallbacks.onSessionCreated = (session: any) => {
-        origOnSession(session);
-        for (const a of manager.listAgents()) {
-          if (a.session === session) {
-            fgId = a.id;
-            agentActivity.set(a.id, fgState);
-            widget.ensureTimer();
-            break;
-          }
-        }
-      };
-
-      const spinnerInterval = setInterval(() => { spinnerFrame++; streamUpdate(); }, 80);
-      streamUpdate();
-
-      let record: AgentRecord;
-      try {
-        record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
-          description: params.description, model, maxTurns: effectiveMaxTurns,
-          isolated, inheritContext, thinkingLevel: thinking, isolation, invocation: agentInvocation, signal, ...fgCallbacks,
-        });
-      } catch (err) {
         clearInterval(spinnerInterval);
-        return textResult(err instanceof Error ? err.message : String(err));
-      }
+        if (fgId) {
+          agentActivity.delete(fgId);
+          widget.markFinished(fgId);
+        }
 
-      clearInterval(spinnerInterval);
-      if (fgId) { agentActivity.delete(fgId); widget.markFinished(fgId); }
+        const tokenText = formatLifetimeTokens(fgState);
+        const details = buildDetails(detailBase, record, fgState, { tokens: tokenText });
+        const fallbackNote = fellBack
+          ? `Note: Unknown agent type "${rawType}" — using general-purpose.\n\n`
+          : "";
 
-      const tokenText = formatLifetimeTokens(fgState);
-      const details = buildDetails(detailBase, record, fgState, { tokens: tokenText });
-      const fallbackNote = fellBack ? `Note: Unknown agent type "${rawType}" — using general-purpose.\n\n` : "";
+        if (record.status === "error") {
+          return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
+        }
 
-      if (record.status === "error") {
-        return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
-      }
-
-      const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-      const statsParts = [`${record.toolUses} tool uses`];
-      if (tokenText) statsParts.push(tokenText);
-      return textResult(
-        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n${record.result?.trim() || "No output."}`,
-        details,
-      );
-    },
-  }));
+        const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
+        const statsParts = [`${record.toolUses} tool uses`];
+        if (tokenText) statsParts.push(tokenText);
+        return textResult(
+          `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.timedOut)}.\n\n${record.result?.trim() || "No output."}`,
+          details,
+        );
+      },
+    }),
+  );
 
   // ---- get_subagent_result tool ----
 
-  pi.registerTool(defineTool({
-    name: "get_subagent_result",
-    label: "Get Agent Result",
-    description: "Check status and retrieve results from a background agent.",
-    parameters: Type.Object({
-      agent_id: Type.String({ description: "The agent ID to check." }),
-      wait: Type.Optional(Type.Boolean({ description: "If true, wait for the agent to complete. Default: false." })),
-      verbose: Type.Optional(Type.Boolean({ description: "If true, include full conversation. Default: false." })),
-    }),
-    execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-      const record = manager.getRecord(params.agent_id);
-      if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
+  pi.registerTool(
+    defineTool({
+      name: "get_subagent_result",
+      label: "Get Agent Result",
+      description: "Check status and retrieve results from a background agent.",
+      parameters: Type.Object({
+        agent_id: Type.String({ description: "The agent ID to check." }),
+        wait: Type.Optional(
+          Type.Boolean({ description: "If true, wait for the agent to complete. Default: false." }),
+        ),
+        verbose: Type.Optional(
+          Type.Boolean({ description: "If true, include full conversation. Default: false." }),
+        ),
+      }),
+      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        const record = manager.getRecord(params.agent_id);
+        if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
 
-      if (params.wait) {
-        // Queued agents have no promise yet — wait until they dequeue first
-        if (record.readyPromise) await record.readyPromise;
-        if ((record.status === "running" || record.status === "waiting") && record.promise) {
+        if (params.wait) {
+          // Queued agents have no promise yet — wait until they dequeue first
+          if (record.readyPromise) await record.readyPromise;
+          if ((record.status === "running" || record.status === "waiting") && record.promise) {
+            record.resultConsumed = true;
+            cancelNudge(params.agent_id);
+            await record.promise;
+          }
+        }
+
+        const displayName = getDisplayName(record.type);
+        const duration = formatDuration(record.startedAt, record.completedAt);
+        const tokens = formatLifetimeTokens(record);
+        const contextPercent = getSessionContextPercent(record.session as any);
+        const statsParts = [`Tool uses: ${record.toolUses}`];
+        if (tokens) statsParts.push(tokens);
+        if (contextPercent !== null) statsParts.push(`Context: ${Math.round(contextPercent)}%`);
+        if (record.compactionCount) statsParts.push(`Compactions: ${record.compactionCount}`);
+        statsParts.push(`Duration: ${duration}`);
+
+        let output = `Agent: ${record.id}\nType: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\nDescription: ${record.description}\n\n`;
+
+        if (record.status === "running" || record.status === "waiting") {
+          output +=
+            record.status === "waiting"
+              ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
+              : "Agent is still running. Use wait: true or check back later.";
+        } else if (record.status === "error") {
+          output += `Error: ${record.error}`;
+        } else {
+          if (record.completionReport) {
+            const r = record.completionReport;
+            output += `Status: ${r.status}\n${r.summary}`;
+            if (r.artifacts?.length)
+              output += `\n\nArtifacts:\n${r.artifacts.map((a) => `- ${a}`).join("\n")}`;
+          } else {
+            output += record.result?.trim() || "No output.";
+          }
+        }
+
+        if (
+          record.status !== "running" &&
+          record.status !== "queued" &&
+          record.status !== "waiting"
+        ) {
           record.resultConsumed = true;
           cancelNudge(params.agent_id);
-          await record.promise;
         }
-      }
 
-      const displayName = getDisplayName(record.type);
-      const duration = formatDuration(record.startedAt, record.completedAt);
-      const tokens = formatLifetimeTokens(record);
-      const contextPercent = getSessionContextPercent(record.session as any);
-      const statsParts = [`Tool uses: ${record.toolUses}`];
-      if (tokens) statsParts.push(tokens);
-      if (contextPercent !== null) statsParts.push(`Context: ${Math.round(contextPercent)}%`);
-      if (record.compactionCount) statsParts.push(`Compactions: ${record.compactionCount}`);
-      statsParts.push(`Duration: ${duration}`);
-
-      let output = `Agent: ${record.id}\nType: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\nDescription: ${record.description}\n\n`;
-
-      if (record.status === "running" || record.status === "waiting") {
-        output += record.status === "waiting"
-          ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
-          : "Agent is still running. Use wait: true or check back later.";
-      } else if (record.status === "error") {
-        output += `Error: ${record.error}`;
-      } else {
-        if (record.completionReport) {
-          const r = record.completionReport;
-          output += `Status: ${r.status}\n${r.summary}`;
-          if (r.artifacts?.length) output += `\n\nArtifacts:\n${r.artifacts.map(a => `- ${a}`).join("\n")}`;
-        } else {
-          output += record.result?.trim() || "No output.";
+        if (params.verbose && record.session) {
+          const conversation = getAgentConversation(record.session);
+          if (conversation) output += `\n\n--- Agent Conversation ---\n${conversation}`;
         }
-      }
 
-      if (record.status !== "running" && record.status !== "queued" && record.status !== "waiting") {
-        record.resultConsumed = true;
-        cancelNudge(params.agent_id);
-      }
-
-      if (params.verbose && record.session) {
-        const conversation = getAgentConversation(record.session);
-        if (conversation) output += `\n\n--- Agent Conversation ---\n${conversation}`;
-      }
-
-      return textResult(output);
-    },
-  }));
+        return textResult(output);
+      },
+    }),
+  );
 
   // ---- report_complete tool ----
 
-  pi.registerTool(defineTool({
-    name: "report_complete",
-    label: "Report Complete",
-    description: "Report task completion with a structured summary. Call this when your task is done.",
-    parameters: Type.Object({
-      summary: Type.String({ description: "Concise summary of what was accomplished." }),
-      status: Type.Union([
-        Type.Literal("success"),
-        Type.Literal("partial"),
-        Type.Literal("failed"),
-      ], { description: "success: fully completed; partial: some work done but incomplete; failed: could not complete the task." }),
-      artifacts: Type.Optional(Type.Array(Type.String(), { description: "Files created or modified (paths or descriptions)." })),
+  pi.registerTool(
+    defineTool({
+      name: "report_complete",
+      label: "Report Complete",
+      description:
+        "Report task completion with a structured summary. Call this when your task is done.",
+      parameters: Type.Object({
+        summary: Type.String({ description: "Concise summary of what was accomplished." }),
+        status: Type.Union(
+          [Type.Literal("success"), Type.Literal("partial"), Type.Literal("failed")],
+          {
+            description:
+              "success: fully completed; partial: some work done but incomplete; failed: could not complete the task.",
+          },
+        ),
+        artifacts: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Files created or modified (paths or descriptions).",
+          }),
+        ),
+      }),
+      execute: async (_toolCallId, params, _signal) => {
+        const ctx = agentContext.getStore();
+        if (!ctx?.agentId)
+          return textResult("Error: report_complete called outside of a subagent context.");
+
+        const record = manager.getRecord(ctx.agentId);
+        if (!record) return textResult("Error: agent record not found.");
+
+        record.completionReport = {
+          summary: params.summary,
+          status: params.status as CompletionReport["status"],
+          artifacts: params.artifacts,
+        };
+
+        return textResult("Report recorded.");
+      },
     }),
-    execute: async (_toolCallId, params, _signal) => {
-      const ctx = agentContext.getStore();
-      if (!ctx?.agentId) return textResult("Error: report_complete called outside of a subagent context.");
-
-      const record = manager.getRecord(ctx.agentId);
-      if (!record) return textResult("Error: agent record not found.");
-
-      record.completionReport = {
-        summary: params.summary,
-        status: params.status as CompletionReport["status"],
-        artifacts: params.artifacts,
-      };
-
-      return textResult("Report recorded.");
-    },
-  }));
+  );
 
   // ---- request_help tool ----
 
-  pi.registerTool(defineTool({
-    name: "request_help",
-    label: "Request Help",
-    description: "Pause and ask the parent for help when stuck. The parent will be notified and can respond via steer_subagent.",
-    parameters: Type.Object({
-      message: Type.String({ description: "Describe what you need help with." }),
+  pi.registerTool(
+    defineTool({
+      name: "request_help",
+      label: "Request Help",
+      description:
+        "Pause and ask the parent for help when stuck. The parent will be notified and can respond via steer_subagent.",
+      parameters: Type.Object({
+        message: Type.String({ description: "Describe what you need help with." }),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        const ctx = agentContext.getStore();
+        if (!ctx?.agentId)
+          return textResult("Error: request_help called outside of a subagent context.");
+
+        const record = manager.getRecord(ctx.agentId);
+        if (!record) return textResult("Error: agent record not found.");
+
+        const response = await new Promise<string>((resolve) => {
+          record.helpResolver = resolve;
+          record.helpMessage = params.message;
+          record.status = "waiting";
+
+          pi.sendMessage<HelpRequestDetails>(
+            {
+              customType: "subagent-ping",
+              content: `Agent "${record.description}" needs help: ${params.message}`,
+              display: true,
+              details: {
+                agentId: record.id,
+                description: record.description,
+                message: params.message,
+              },
+            },
+            { deliverAs: "followUp", triggerTurn: true },
+          );
+
+          widget.update();
+
+          signal?.addEventListener(
+            "abort",
+            () => {
+              if (record.helpResolver === resolve) {
+                record.helpResolver = undefined;
+                record.helpMessage = undefined;
+                resolve("[cancelled: agent was aborted]");
+              }
+            },
+            { once: true },
+          );
+        });
+
+        return textResult(`Parent responded: ${response}`);
+      },
     }),
-    execute: async (_toolCallId, params, signal) => {
-      const ctx = agentContext.getStore();
-      if (!ctx?.agentId) return textResult("Error: request_help called outside of a subagent context.");
-
-      const record = manager.getRecord(ctx.agentId);
-      if (!record) return textResult("Error: agent record not found.");
-
-      const response = await new Promise<string>((resolve) => {
-        record.helpResolver = resolve;
-        record.helpMessage = params.message;
-        record.status = "waiting";
-
-        pi.sendMessage<HelpRequestDetails>({
-          customType: "subagent-ping",
-          content: `Agent "${record.description}" needs help: ${params.message}`,
-          display: true,
-          details: { agentId: record.id, description: record.description, message: params.message },
-        }, { deliverAs: "followUp", triggerTurn: true });
-
-        widget.update();
-
-        signal?.addEventListener("abort", () => {
-          if (record.helpResolver === resolve) {
-            record.helpResolver = undefined;
-            record.helpMessage = undefined;
-            resolve("[cancelled: agent was aborted]");
-          }
-        }, { once: true });
-      });
-
-      return textResult(`Parent responded: ${response}`);
-    },
-  }));
+  );
 
   // Hide subagent-only completion/help tools from parent sessions. They remain
   // registered so subagent sessions can enable them after binding extensions.
   function hideSubagentContextToolsFromParent() {
     const activeTools = pi.getActiveTools();
-    const filtered = activeTools.filter(
-      (tool) => !SUBAGENT_CONTEXT_TOOL_NAMES.includes(tool),
-    );
+    const filtered = activeTools.filter((tool) => !SUBAGENT_CONTEXT_TOOL_NAMES.includes(tool));
     if (filtered.length !== activeTools.length) {
       pi.setActiveTools(filtered);
     }
@@ -1069,61 +1330,78 @@ Guidelines:
 
   // ---- steer_subagent tool ----
 
-  pi.registerTool(defineTool({
-    name: "steer_subagent",
-    label: "Steer Agent",
-    description: "Send a steering message to a running agent.",
-    parameters: Type.Object({
-      agent_id: Type.String({ description: "The agent ID to steer (must be running or waiting for help)." }),
-      message: Type.String({ description: "The steering message to send." }),
+  pi.registerTool(
+    defineTool({
+      name: "steer_subagent",
+      label: "Steer Agent",
+      description: "Send a steering message to a running agent.",
+      parameters: Type.Object({
+        agent_id: Type.String({
+          description: "The agent ID to steer (must be running or waiting for help).",
+        }),
+        message: Type.String({ description: "The steering message to send." }),
+      }),
+      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        const record = manager.getRecord(params.agent_id);
+        if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
+
+        // Respond to a waiting agent (request_help)
+        if (record.status === "waiting" && record.helpResolver) {
+          const resolve = record.helpResolver;
+          record.helpResolver = undefined;
+          record.helpMessage = undefined;
+          record.status = "running";
+          resolve(params.message);
+          widget.update();
+          pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+          return textResult(`Response delivered to waiting agent ${record.id}.`);
+        }
+
+        if (record.status !== "running")
+          return textResult(
+            `Agent "${params.agent_id}" is not running (status: ${record.status}).`,
+          );
+        if (!record.session) {
+          if (!record.pendingSteers) record.pendingSteers = [];
+          if (record.pendingSteers.length < 20) record.pendingSteers.push(params.message);
+          pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+          return textResult(`Steering message queued for agent ${record.id}.`);
+        }
+
+        try {
+          await steerAgent(record.session, params.message);
+          pi.events.emit("subagents:steered", { id: record.id, message: params.message });
+          const tokens = formatLifetimeTokens(record);
+          const contextPercent = getSessionContextPercent(record.session as any);
+          const stateParts: string[] = [];
+          if (tokens) stateParts.push(tokens);
+          stateParts.push(`${record.toolUses} tool ${record.toolUses === 1 ? "use" : "uses"}`);
+          if (contextPercent !== null)
+            stateParts.push(`context ${Math.round(contextPercent)}% full`);
+          if (record.compactionCount)
+            stateParts.push(
+              `${record.compactionCount} compaction${record.compactionCount === 1 ? "" : "s"}`,
+            );
+          return textResult(
+            `Steering message sent to agent ${record.id}.\nCurrent state: ${stateParts.join(" · ")}`,
+          );
+        } catch (err) {
+          return textResult(
+            `Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      },
     }),
-    execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-      const record = manager.getRecord(params.agent_id);
-      if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
-
-      // Respond to a waiting agent (request_help)
-      if (record.status === "waiting" && record.helpResolver) {
-        const resolve = record.helpResolver;
-        record.helpResolver = undefined;
-        record.helpMessage = undefined;
-        record.status = "running";
-        resolve(params.message);
-        widget.update();
-        pi.events.emit("subagents:steered", { id: record.id, message: params.message });
-        return textResult(`Response delivered to waiting agent ${record.id}.`);
-      }
-
-      if (record.status !== "running") return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}).`);
-      if (!record.session) {
-        if (!record.pendingSteers) record.pendingSteers = [];
-        if (record.pendingSteers.length < 20) record.pendingSteers.push(params.message);
-        pi.events.emit("subagents:steered", { id: record.id, message: params.message });
-        return textResult(`Steering message queued for agent ${record.id}.`);
-      }
-
-      try {
-        await steerAgent(record.session, params.message);
-        pi.events.emit("subagents:steered", { id: record.id, message: params.message });
-        const tokens = formatLifetimeTokens(record);
-        const contextPercent = getSessionContextPercent(record.session as any);
-        const stateParts: string[] = [];
-        if (tokens) stateParts.push(tokens);
-        stateParts.push(`${record.toolUses} tool ${record.toolUses === 1 ? "use" : "uses"}`);
-        if (contextPercent !== null) stateParts.push(`context ${Math.round(contextPercent)}% full`);
-        if (record.compactionCount) stateParts.push(`${record.compactionCount} compaction${record.compactionCount === 1 ? "" : "s"}`);
-        return textResult(`Steering message sent to agent ${record.id}.\nCurrent state: ${stateParts.join(" · ")}`);
-      } catch (err) {
-        return textResult(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    },
-  }));
+  );
 
   // ---- /agents command ----
 
   const projectAgentsDir = () => join(process.cwd(), ".pi", "agents");
   const personalAgentsDir = () => join(getAgentDir(), "agents");
 
-  function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
+  function findAgentFile(
+    name: string,
+  ): { path: string; location: "project" | "personal" } | undefined {
     const projectPath = join(projectAgentsDir(), `${name}.md`);
     if (existsSync(projectPath)) return { path: projectPath, location: "project" };
     const personalPath = join(personalAgentsDir(), `${name}.md`);
@@ -1143,8 +1421,8 @@ Guidelines:
     const options: string[] = [];
     const agents = manager.listAgents();
     if (agents.length > 0) {
-      const running = agents.filter(a => a.status === "running" || a.status === "queued").length;
-      const done = agents.filter(a => a.status === "completed" || a.status === "steered").length;
+      const running = agents.filter((a) => a.status === "running" || a.status === "queued").length;
+      const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length;
       options.push(`Running agents (${agents.length}) — ${running} running, ${done} done`);
     }
     if (allNames.length > 0) options.push(`Agent types (${allNames.length})`);
@@ -1154,56 +1432,94 @@ Guidelines:
     const choice = await ctx.ui.select("Agents", options);
     if (!choice) return;
 
-    if (choice.startsWith("Running agents (")) { await showRunningAgents(ctx); await showAgentsMenu(ctx); }
-    else if (choice.startsWith("Agent types (")) { await showAllAgentsList(ctx); await showAgentsMenu(ctx); }
-    else if (choice === "Create new agent") { await showCreateWizard(ctx); }
-    else if (choice === "Settings") { await showSettings(ctx); await showAgentsMenu(ctx); }
+    if (choice.startsWith("Running agents (")) {
+      await showRunningAgents(ctx);
+      await showAgentsMenu(ctx);
+    } else if (choice.startsWith("Agent types (")) {
+      await showAllAgentsList(ctx);
+      await showAgentsMenu(ctx);
+    } else if (choice === "Create new agent") {
+      await showCreateWizard(ctx);
+    } else if (choice === "Settings") {
+      await showSettings(ctx);
+      await showAgentsMenu(ctx);
+    }
   }
 
   async function showAllAgentsList(ctx: ExtensionCommandContext) {
     const allNames = getAllTypes();
-    if (allNames.length === 0) { ctx.ui.notify("No agents.", "info"); return; }
+    if (allNames.length === 0) {
+      ctx.ui.notify("No agents.", "info");
+      return;
+    }
 
-    const entries = allNames.map(name => {
+    const entries = allNames.map((name) => {
       const cfg = getAgentConfig(name);
       const disabled = cfg?.enabled === false;
       const model = getModelLabel(name);
-      const indicator = cfg?.source === "project" ? (disabled ? "✕• " : "•  ") : cfg?.source === "global" ? (disabled ? "✕◦ " : "◦  ") : disabled ? "✕  " : "   ";
+      const indicator =
+        cfg?.source === "project"
+          ? disabled
+            ? "✕• "
+            : "•  "
+          : cfg?.source === "global"
+            ? disabled
+              ? "✕◦ "
+              : "◦  "
+            : disabled
+              ? "✕  "
+              : "   ";
       const prefix = `${indicator}${name} · ${model}`;
       const desc = disabled ? "(disabled)" : (cfg?.description ?? name);
       return { name, prefix, desc };
     });
-    const maxPrefix = Math.max(...entries.map(e => e.prefix.length));
+    const maxPrefix = Math.max(...entries.map((e) => e.prefix.length));
     const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} — ${desc}`);
-    const choice = await ctx.ui.select("Agent types", options);
+    const choice = await selectAgentList(ctx, "Agent types", options);
     if (!choice) return;
-    const agentName = choice.split(" · ")[0].replace(/^[•◦✕\s]+/, "").trim();
-    if (getAgentConfig(agentName)) { await showAgentDetail(ctx, agentName); await showAllAgentsList(ctx); }
+    const agentName = choice
+      .split(" · ")[0]
+      .replace(/^[•◦✕\s]+/, "")
+      .trim();
+    if (getAgentConfig(agentName)) {
+      await showAgentDetail(ctx, agentName);
+      await showAllAgentsList(ctx);
+    }
   }
 
   async function showRunningAgents(ctx: ExtensionCommandContext) {
     const agents = manager.listAgents();
-    if (agents.length === 0) { ctx.ui.notify("No agents.", "info"); return; }
-    const options = agents.map(a => {
+    if (agents.length === 0) {
+      ctx.ui.notify("No agents.", "info");
+      return;
+    }
+    const options = agents.map((a) => {
       const dn = getDisplayName(a.type);
       const dur = formatDuration(a.startedAt, a.completedAt);
       return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`;
     });
-    await ctx.ui.select("Running agents", options);
+    await selectAgentList(ctx, "Running agents", options);
   }
 
   async function showAgentDetail(ctx: ExtensionCommandContext, name: string) {
     const cfg = getAgentConfig(name);
-    if (!cfg) { ctx.ui.notify(`Agent not found: "${name}".`, "warning"); return; }
+    if (!cfg) {
+      ctx.ui.notify(`Agent not found: "${name}".`, "warning");
+      return;
+    }
 
     const file = findAgentFile(name);
-    const isDefault = cfg.isDefault === true;
+    const isDefault = DEFAULT_AGENTS.has(name);
     const disabled = cfg.enabled === false;
 
     let menuOptions: string[];
-    if (disabled && file) menuOptions = isDefault ? ["Enable", "Edit", "Reset to default", "Delete", "Back"] : ["Enable", "Edit", "Delete", "Back"];
+    if (disabled && file)
+      menuOptions = isDefault
+        ? ["Enable", "Edit", "Reset to default", "Delete", "Back"]
+        : ["Enable", "Edit", "Delete", "Back"];
     else if (isDefault && !file) menuOptions = ["Eject (export as .md)", "Disable", "Back"];
-    else if (isDefault && file) menuOptions = ["Edit", "Disable", "Reset to default", "Delete", "Back"];
+    else if (isDefault && file)
+      menuOptions = ["Edit", "Disable", "Reset to default", "Delete", "Back"];
     else menuOptions = ["Edit", "Disable", "Delete", "Back"];
 
     const choice = await ctx.ui.select(name, menuOptions);
@@ -1219,11 +1535,22 @@ Guidelines:
         ctx.ui.notify(`Updated ${file.path}`, "info");
       }
     } else if (choice === "Delete" && file) {
-      const confirmed = await ctx.ui.confirm("Delete agent", `Delete ${name} from ${file.location} (${file.path})?`);
-      if (confirmed) { unlinkSync(file.path); reloadCustomAgents(); ctx.ui.notify(`Deleted ${file.path}`, "info"); }
+      const confirmed = await ctx.ui.confirm(
+        "Delete agent",
+        `Delete ${name} from ${file.location} (${file.path})?`,
+      );
+      if (confirmed) {
+        unlinkSync(file.path);
+        reloadCustomAgents();
+        ctx.ui.notify(`Deleted ${file.path}`, "info");
+      }
     } else if (choice === "Reset to default" && file) {
       const confirmed = await ctx.ui.confirm("Reset to default", `Delete override ${file.path}?`);
-      if (confirmed) { unlinkSync(file.path); reloadCustomAgents(); ctx.ui.notify(`Restored default ${name}`, "info"); }
+      if (confirmed) {
+        unlinkSync(file.path);
+        reloadCustomAgents();
+        ctx.ui.notify(`Restored default ${name}`, "info");
+      }
     } else if (choice.startsWith("Eject")) {
       await ejectAgent(ctx, name, cfg);
     } else if (choice === "Disable") {
@@ -1234,13 +1561,16 @@ Guidelines:
   }
 
   async function ejectAgent(ctx: ExtensionCommandContext, name: string, cfg: AgentConfig) {
-    const location = await ctx.ui.select("Choose location", ["Project (.pi/agents/)", `Personal (${personalAgentsDir()})`]);
+    const location = await ctx.ui.select("Choose location", [
+      "Project (.pi/agents/)",
+      `Personal (${personalAgentsDir()})`,
+    ]);
     if (!location) return;
     const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
     mkdirSync(targetDir, { recursive: true });
     const targetPath = join(targetDir, `${name}.md`);
     if (existsSync(targetPath)) {
-      if (!await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)) return;
+      if (!(await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`))) return;
     }
     const yamlStr = (s: string) =>
       `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r")}"`;
@@ -1251,12 +1581,15 @@ Guidelines:
     if (cfg.model) fmFields.push(`model: ${yamlStr(cfg.model)}`);
     if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
     if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
+    if (cfg.timeoutSeconds) fmFields.push(`timeout_seconds: ${cfg.timeoutSeconds}`);
     fmFields.push(`prompt_mode: ${cfg.promptMode}`);
     if (cfg.extensions === false) fmFields.push("extensions: false");
-    else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
+    else if (Array.isArray(cfg.extensions))
+      fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
     if (cfg.skills === false) fmFields.push("skills: false");
     else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`);
-    if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`);
+    if (cfg.disallowedTools?.length)
+      fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`);
     const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`;
     const { writeFileSync } = await import("node:fs");
     writeFileSync(targetPath, content, "utf-8");
@@ -1270,7 +1603,10 @@ Guidelines:
       const raw = readFileSync(file.path, "utf-8");
       const content = raw.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
       const { frontmatter } = parseFrontmatter<Record<string, unknown>>(content);
-      if (frontmatter.enabled === false) { ctx.ui.notify(`${name} is already disabled.`, "info"); return; }
+      if (frontmatter.enabled === false) {
+        ctx.ui.notify(`${name} is already disabled.`, "info");
+        return;
+      }
       const updated = content.replace(/^---[ \t]*\n/, "---\nenabled: false\n");
       const { writeFileSync } = await import("node:fs");
       writeFileSync(file.path, updated, "utf-8");
@@ -1278,7 +1614,10 @@ Guidelines:
       ctx.ui.notify(`Disabled ${name} (${file.path})`, "info");
       return;
     }
-    const location = await ctx.ui.select("Choose location", ["Project (.pi/agents/)", `Personal (${personalAgentsDir()})`]);
+    const location = await ctx.ui.select("Choose location", [
+      "Project (.pi/agents/)",
+      `Personal (${personalAgentsDir()})`,
+    ]);
     if (!location) return;
     const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
     mkdirSync(targetDir, { recursive: true });
@@ -1308,24 +1647,39 @@ Guidelines:
   }
 
   async function showCreateWizard(ctx: ExtensionCommandContext) {
-    const location = await ctx.ui.select("Choose location", ["Project (.pi/agents/)", `Personal (${personalAgentsDir()})`]);
+    const location = await ctx.ui.select("Choose location", [
+      "Project (.pi/agents/)",
+      `Personal (${personalAgentsDir()})`,
+    ]);
     if (!location) return;
     const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
     const name = await ctx.ui.input("Agent name (filename, no spaces)");
     if (!name) return;
     if (!/^[\w.-]+$/.test(name) || name.includes("..")) {
-      ctx.ui.notify("Invalid agent name. Use only letters, numbers, hyphens, and underscores.", "error");
+      ctx.ui.notify(
+        "Invalid agent name. Use only letters, numbers, hyphens, and underscores.",
+        "error",
+      );
       return;
     }
     const description = await ctx.ui.input("Description (one line)");
     if (!description) return;
-    const toolChoice = await ctx.ui.select("Tools", ["all", "none", "read-only (read, bash, grep, find, ls)", "custom..."]);
+    const toolChoice = await ctx.ui.select("Tools", [
+      "all",
+      "none",
+      "read-only (read, bash, grep, find, ls)",
+      "custom...",
+    ]);
     if (!toolChoice) return;
     let tools: string;
     if (toolChoice === "all") tools = BUILTIN_TOOL_NAMES.join(", ");
     else if (toolChoice === "none") tools = "none";
     else if (toolChoice.startsWith("read-only")) tools = "read, bash, grep, find, ls";
-    else { const custom = await ctx.ui.input("Tools (comma-separated)", BUILTIN_TOOL_NAMES.join(", ")); if (!custom) return; tools = custom; }
+    else {
+      const custom = await ctx.ui.input("Tools (comma-separated)", BUILTIN_TOOL_NAMES.join(", "));
+      if (!custom) return;
+      tools = custom;
+    }
 
     const systemPrompt = await ctx.ui.editor("System prompt", "");
     if (systemPrompt === undefined) return;
@@ -1338,7 +1692,7 @@ Guidelines:
       return;
     }
     if (existsSync(targetPath)) {
-      if (!await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)) return;
+      if (!(await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`))) return;
     }
     const { writeFileSync } = await import("node:fs");
     writeFileSync(targetPath, content, "utf-8");
@@ -1350,6 +1704,7 @@ Guidelines:
     return {
       maxConcurrent: manager.getMaxConcurrent(),
       defaultMaxTurns: manager.getDefaultMaxTurns() ?? 0,
+      defaultTimeoutSeconds: manager.getDefaultTimeoutSeconds() ?? 0,
       graceTurns: manager.getGraceTurns(),
       defaultJoinMode: getDefaultJoinMode(),
       cmuxIntegration: cmux.active,
@@ -1364,6 +1719,7 @@ Guidelines:
     const choice = await ctx.ui.select("Settings", [
       `Max concurrency (current: ${manager.getMaxConcurrent()})`,
       `Default max turns (current: ${manager.getDefaultMaxTurns() ?? "unlimited"})`,
+      `Default timeout (current: ${manager.getDefaultTimeoutSeconds() != null ? manager.getDefaultTimeoutSeconds() + "s" : "unlimited"})`,
       `Grace turns (current: ${manager.getGraceTurns()})`,
       `Join mode (current: ${getDefaultJoinMode()})`,
       cmuxLabel,
@@ -1371,26 +1727,89 @@ Guidelines:
     if (!choice) return;
 
     if (choice.startsWith("Max concurrency")) {
-      const val = await ctx.ui.input("Max concurrent background agents", String(manager.getMaxConcurrent()));
-      if (val) { const n = parseInt(val, 10); if (n >= 1) { manager.setMaxConcurrent(n); notifyApplied(ctx, `Max concurrency set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }
+      const val = await ctx.ui.input(
+        "Max concurrent background agents",
+        String(manager.getMaxConcurrent()),
+      );
+      if (val) {
+        const n = parseInt(val, 10);
+        if (n >= 1) {
+          manager.setMaxConcurrent(n);
+          notifyApplied(ctx, `Max concurrency set to ${n}`);
+        } else ctx.ui.notify("Must be a positive integer.", "warning");
+      }
     } else if (choice.startsWith("Default max turns")) {
-      const val = await ctx.ui.input("Default max turns (0 = unlimited)", String(manager.getDefaultMaxTurns() ?? 0));
-      if (val) { const n = parseInt(val, 10); if (n === 0) { manager.setDefaultMaxTurns(undefined); notifyApplied(ctx, "Default max turns set to unlimited"); } else if (n >= 1) { manager.setDefaultMaxTurns(n); notifyApplied(ctx, `Default max turns set to ${n}`); } else ctx.ui.notify("Must be 0 or positive integer.", "warning"); }
+      const val = await ctx.ui.input(
+        "Default max turns (0 = unlimited)",
+        String(manager.getDefaultMaxTurns() ?? 0),
+      );
+      if (val) {
+        const n = parseInt(val, 10);
+        if (n === 0) {
+          manager.setDefaultMaxTurns(undefined);
+          notifyApplied(ctx, "Default max turns set to unlimited");
+        } else if (n >= 1) {
+          manager.setDefaultMaxTurns(n);
+          notifyApplied(ctx, `Default max turns set to ${n}`);
+        } else ctx.ui.notify("Must be 0 or positive integer.", "warning");
+      }
+    } else if (choice.startsWith("Default timeout")) {
+      const val = await ctx.ui.input(
+        "Default timeout in seconds (0 = unlimited)",
+        String(manager.getDefaultTimeoutSeconds() ?? 0),
+      );
+      if (val) {
+        const n = parseInt(val, 10);
+        if (n === 0) {
+          manager.setDefaultTimeoutSeconds(undefined);
+          notifyApplied(ctx, "Default timeout set to unlimited");
+        } else if (n >= 1) {
+          manager.setDefaultTimeoutSeconds(n);
+          notifyApplied(ctx, `Default timeout set to ${n}s`);
+        } else ctx.ui.notify("Must be 0 or positive integer.", "warning");
+      }
     } else if (choice.startsWith("Grace turns")) {
-      const val = await ctx.ui.input("Grace turns after wrap-up steer", String(manager.getGraceTurns()));
-      if (val) { const n = parseInt(val, 10); if (n >= 1) { manager.setGraceTurns(n); notifyApplied(ctx, `Grace turns set to ${n}`); } else ctx.ui.notify("Must be a positive integer.", "warning"); }
+      const val = await ctx.ui.input(
+        "Grace turns after wrap-up steer",
+        String(manager.getGraceTurns()),
+      );
+      if (val) {
+        const n = parseInt(val, 10);
+        if (n >= 1) {
+          manager.setGraceTurns(n);
+          notifyApplied(ctx, `Grace turns set to ${n}`);
+        } else ctx.ui.notify("Must be a positive integer.", "warning");
+      }
     } else if (choice.startsWith("Join mode")) {
-      const val = await ctx.ui.select("Default join mode", ["smart — auto-group 2+ agents in same turn", "async — always notify individually", "group — always group background agents"]);
-      if (val) { const mode = val.split(" ")[0] as JoinMode; setDefaultJoinMode(mode); notifyApplied(ctx, `Default join mode set to ${mode}`); }
+      const val = await ctx.ui.select("Default join mode", [
+        "smart — auto-group 2+ agents in same turn",
+        "async — always notify individually",
+        "group — always group background agents",
+      ]);
+      if (val) {
+        const mode = val.split(" ")[0] as JoinMode;
+        setDefaultJoinMode(mode);
+        notifyApplied(ctx, `Default join mode set to ${mode}`);
+      }
     } else if (choice.startsWith("cmux")) {
-      if (!cmuxAvail) { ctx.ui.notify("cmux is not available (CMUX_WORKSPACE_ID not set).", "warning"); return; }
+      if (!cmuxAvail) {
+        ctx.ui.notify("cmux is not available (CMUX_WORKSPACE_ID not set).", "warning");
+        return;
+      }
       const val = await ctx.ui.select("cmux sidebar integration", ["Enable", "Disable"]);
-      if (val) { cmux.updateOptions({ enabled: val === "Enable" }); notifyApplied(ctx, `cmux integration ${val === "Enable" ? "enabled" : "disabled"}`); }
+      if (val) {
+        cmux.updateOptions({ enabled: val === "Enable" });
+        notifyApplied(ctx, `cmux integration ${val === "Enable" ? "enabled" : "disabled"}`);
+      }
     }
   }
 
   function notifyApplied(ctx: ExtensionCommandContext, successMsg: string) {
-    const { message, level } = saveAndEmitChanged(snapshotSettings(), successMsg, (event, payload) => pi.events.emit(event, payload));
+    const { message, level } = saveAndEmitChanged(
+      snapshotSettings(),
+      successMsg,
+      (event, payload) => pi.events.emit(event, payload),
+    );
     ctx.ui.notify(message, level);
   }
 
@@ -1448,20 +1867,32 @@ Guidelines:
 
       // Phase 1: Scout
       report("\u23F3 Scout \u2014 exploring codebase\u2026");
-      const scoutRecord = await manager.spawnAndWait(pi, spawnCtx, "Explore",
+      const scoutRecord = await manager.spawnAndWait(
+        pi,
+        spawnCtx,
+        "Explore",
         `Scout the codebase to understand what is relevant for this task:\n\n${task}\n\nExplore directory structure, locate key files, and summarize your findings concisely. Focus on what a developer needs to know to implement the task. Call report_complete with your findings as the summary.`,
         { description: "scout" },
       );
-      if (isCancelled(scoutRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      if (isCancelled(scoutRecord)) {
+        report("Plan workflow cancelled.", "warning");
+        return;
+      }
       const scoutResult = getRecordOutput(scoutRecord);
       report("\u2713 Scout done \u2014 planning\u2026");
 
       // Phase 2: Plan
-      const planRecord = await manager.spawnAndWait(pi, spawnCtx, "Plan",
+      const planRecord = await manager.spawnAndWait(
+        pi,
+        spawnCtx,
+        "Plan",
         `Create an implementation plan for the following task.\n\n## Task\n${task}\n\n## Scout Findings\n${scoutResult}\n\nOutput a numbered task list under a "## Implementation Tasks" heading. Each task must be a single, independently actionable unit of work. Maximum 6 tasks. Call report_complete with the full plan as the summary.`,
         { description: "plan" },
       );
-      if (isCancelled(planRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      if (isCancelled(planRecord)) {
+        report("Plan workflow cancelled.", "warning");
+        return;
+      }
       let planResult = getRecordOutput(planRecord);
       let tasks = parseNumberedTasks(planResult);
 
@@ -1484,15 +1915,24 @@ Guidelines:
         if (!feedback) continue;
 
         report("\u23F3 Revising plan\u2026");
-        const revisedRecord = await manager.spawnAndWait(pi, spawnCtx, "Plan",
+        const revisedRecord = await manager.spawnAndWait(
+          pi,
+          spawnCtx,
+          "Plan",
           `Revise the following implementation plan based on feedback.\n\n## Original Task\n${task}\n\n## Current Plan\n${planResult}\n\n## Requested Changes\n${feedback}\n\nOutput the revised numbered task list under "## Implementation Tasks". Call report_complete with the full revised plan as the summary.`,
           { description: "plan (revision)" },
         );
-        if (isCancelled(revisedRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+        if (isCancelled(revisedRecord)) {
+          report("Plan workflow cancelled.", "warning");
+          return;
+        }
         planResult = getRecordOutput(revisedRecord);
         tasks = parseNumberedTasks(planResult);
         if (tasks.length === 0) {
-          report("Revised plan has no parseable tasks \u2014 please request changes again.", "warning");
+          report(
+            "Revised plan has no parseable tasks \u2014 please request changes again.",
+            "warning",
+          );
         }
       }
 
@@ -1504,24 +1944,36 @@ Guidelines:
 
       // Phase 3: Execute (parallel workers)
       const workerIds = tasks.map((taskDesc, i) =>
-        manager.spawn(pi, spawnCtx, "general-purpose",
+        manager.spawn(
+          pi,
+          spawnCtx,
+          "general-purpose",
           `You are implementing one task as part of a larger plan.\n\n## Overall Goal\n${task}\n\n## Your Specific Task\n${taskDesc}\n\n## Full Plan\n${planResult}\n\n## Scout Findings\n${scoutResult}\n\nImplement your specific task completely. Call report_complete when done.`,
           { description: `worker ${i + 1}/${tasks.length}`, isBackground: true },
-        )
+        ),
       );
       const workerRecords = await Promise.all(workerIds.map(waitForAgent));
-      if (workerRecords.some(isCancelled)) { report("Plan workflow cancelled during execution.", "warning"); return; }
+      if (workerRecords.some(isCancelled)) {
+        report("Plan workflow cancelled during execution.", "warning");
+        return;
+      }
       const workerSummaries = workerRecords
         .map((r, i) => `### Task ${i + 1}: ${tasks[i]}\n${getRecordOutput(r)}`)
         .join("\n\n");
       report("\u2713 Execute done \u2014 reviewing\u2026");
 
       // Phase 4: Review
-      const reviewRecord = await manager.spawnAndWait(pi, spawnCtx, "code-review",
+      const reviewRecord = await manager.spawnAndWait(
+        pi,
+        spawnCtx,
+        "code-review",
         `Review the implementation for the following task.\n\n## Original Task\n${task}\n\n## Plan\n${planResult}\n\n## Worker Results\n${workerSummaries}\n\nValidate that all plan items are addressed, check for correctness, and summarize what was done and any issues found. Call report_complete with your verdict.`,
         { description: "review" },
       );
-      if (isCancelled(reviewRecord)) { report("Plan workflow cancelled.", "warning"); return; }
+      if (isCancelled(reviewRecord)) {
+        report("Plan workflow cancelled.", "warning");
+        return;
+      }
       const reviewResult = getRecordOutput(reviewRecord);
       report(`\u2713 Plan workflow complete.\n\n${reviewResult}`);
     },
@@ -1529,6 +1981,8 @@ Guidelines:
 
   pi.registerCommand("agents", {
     description: "Manage agents",
-    handler: async (_args, ctx) => { await showAgentsMenu(ctx); },
+    handler: async (_args, ctx) => {
+      await showAgentsMenu(ctx);
+    },
   });
 }
