@@ -309,6 +309,8 @@ test(
       assert.ok(started.data?.id);
       await prompt(app, `TUI:get:${started.data.id}`);
       await app.expect("end marker");
+      // The marker may still be visible from the previous response.
+      await app.editorReady();
       await app.openAgents();
       await app.expect("Create new agent");
       await app.choose("Running agents (");

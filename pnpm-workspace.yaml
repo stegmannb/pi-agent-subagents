@@ -2,3 +2,7 @@ allowBuilds:
   '@google/genai': set this to true or false
   koffi: set this to true or false
   protobufjs: set this to true or false
+patchedDependencies:
+  '@microsoft/tui-test@0.1.0-beta.5': patches/@microsoft__tui-test@0.1.0-beta.5.patch
+  oxfmt@0.33.0: patches/oxfmt@0.33.0.patch
+  oxlint@1.66.0: patches/oxlint@1.66.0.patch

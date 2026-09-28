@@ -1,0 +1,16 @@
+diff --git a/native/index.js b/native/index.js
+index 783c2887c3ab64ca23f2572c3a9f5baa4ff90c50..d09762cd70d7c08e05a7ea9b10d2b3d3891f4e38 100644
+--- a/native/index.js
++++ b/native/index.js
+@@ -12,6 +12,11 @@ let nativeBinding = null
+ const loadErrors = []
+ 
+ const isMusl = () => {
++  // Nix Node can use glibc even when the host's /usr/bin/ldd uses musl.
++  if (process.platform === 'linux' && typeof process.report?.getReport === 'function') {
++    process.report.excludeNetwork = true
++    if (process.report.getReport()?.header?.glibcVersionRuntime) return false
++  }
+   let musl = false
+   if (process.platform === 'linux') {
+     musl = isMuslFromFilesystem()

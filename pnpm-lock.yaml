@@ -4,6 +4,17 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@microsoft/tui-test@0.1.0-beta.5':
+    hash: cac4c086fb2ac01fd9a19e805ef0afeb5e2465ac04f19d956193fc9b92940789
+    path: patches/@microsoft__tui-test@0.1.0-beta.5.patch
+  oxfmt@0.33.0:
+    hash: 89f7706701e9fd185f0f19962d347c09311c7263d9dacb86b56c3630f00d589d
+    path: patches/oxfmt@0.33.0.patch
+  oxlint@1.66.0:
+    hash: cdd9e613d66af39368287f2f7402e5e74f8fea7d68be91f41472c6c9c3dbb5c9
+    path: patches/oxlint@1.66.0.patch
+
 importers:
 
   .:
@@ -23,16 +34,16 @@ importers:
         version: 0.73.0
       '@microsoft/tui-test':
         specifier: 0.1.0-beta.5
-        version: 0.1.0-beta.5
+        version: 0.1.0-beta.5(patch_hash=cac4c086fb2ac01fd9a19e805ef0afeb5e2465ac04f19d956193fc9b92940789)
       '@types/node':
         specifier: ^24
         version: 24.12.4
       oxfmt:
         specifier: ^0.33.0
-        version: 0.33.0
+        version: 0.33.0(patch_hash=89f7706701e9fd185f0f19962d347c09311c7263d9dacb86b56c3630f00d589d)
       oxlint:
         specifier: ^1.0.0
-        version: 1.66.0
+        version: 1.66.0(patch_hash=cdd9e613d66af39368287f2f7402e5e74f8fea7d68be91f41472c6c9c3dbb5c9)
       typescript:
         specifier: ^5
         version: 5.9.3
@@ -1609,7 +1620,7 @@ snapshots:
   '@microsoft/tui-test-win32-x64-msvc@0.1.0-beta.5':
     optional: true
 
-  '@microsoft/tui-test@0.1.0-beta.5':
+  '@microsoft/tui-test@0.1.0-beta.5(patch_hash=cac4c086fb2ac01fd9a19e805ef0afeb5e2465ac04f19d956193fc9b92940789)':
     optionalDependencies:
       '@microsoft/tui-test-darwin-arm64': 0.1.0-beta.5
       '@microsoft/tui-test-darwin-x64': 0.1.0-beta.5
@@ -2147,7 +2158,7 @@ snapshots:
       ws: 8.20.1
       zod: 4.4.3
 
-  oxfmt@0.33.0:
+  oxfmt@0.33.0(patch_hash=89f7706701e9fd185f0f19962d347c09311c7263d9dacb86b56c3630f00d589d):
     dependencies:
       tinypool: 2.1.0
     optionalDependencies:
@@ -2171,7 +2182,7 @@ snapshots:
       '@oxfmt/binding-win32-ia32-msvc': 0.33.0
       '@oxfmt/binding-win32-x64-msvc': 0.33.0
 
-  oxlint@1.66.0:
+  oxlint@1.66.0(patch_hash=cdd9e613d66af39368287f2f7402e5e74f8fea7d68be91f41472c6c9c3dbb5c9):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.66.0
       '@oxlint/binding-android-arm64': 1.66.0

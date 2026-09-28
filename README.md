@@ -58,6 +58,27 @@ Run `/agents` in the pi TUI to browse agent types, manage running agents, and ad
 
 Run `devenv test` for all checks, `devenv tasks run test:unit` for unit tests, or `devenv tasks run test:tui` for real pi terminal tests. The TUI tests use a scripted local provider and need no API credentials. See [TUI test guide](docs/tui-tests.md) for setup, focused runs, and failure artifacts.
 
+### Native tooling patches
+
+`pnpm-workspace.yaml` pins patches for the locked oxfmt 0.33.0, oxlint 1.66.0
+and `@microsoft/tui-test` 0.1.0-beta.5 loaders. On an Alpine host, Nix Node uses
+glibc while `/usr/bin/ldd` describes musl. The unpatched loaders prefer that host
+file and request a musl binding,
+although pnpm installs the GNU binding for the Node runtime.
+
+The patches give a positive `process.report.getReport().header.glibcVersionRuntime`
+result precedence on Linux. Without that result, the original musl/unknown
+fallbacks remain unchanged. Package versions, optional dependency selection and
+all CI checks stay unchanged. Install with `pnpm install --frozen-lockfile` to
+apply the version-bound patches recorded in `pnpm-lock.yaml`.
+
+When updating a patched dependency, inspect its new native loader and remove its
+patch only when runtime glibc takes precedence upstream. Otherwise regenerate it with
+`pnpm patch` and `pnpm patch-commit`. Validate a fresh frozen install and
+`pnpm run ci:fmt`, `pnpm run ci:lint` and `pnpm run test:tui` with glibc Node on an
+Alpine host, as well as the normal test suite. Do not force musl dependencies to compensate for a
+loader choosing the wrong libc.
+
 ## Custom agents
 
 Create a markdown file with frontmatter to define a custom agent:
@@ -75,6 +96,12 @@ Your system prompt here.
 ```
 
 `max_turns` bounds the number of agentic turns; `timeout_seconds` bounds wall-clock runtime regardless of turn count — the agent is aborted once either limit is hit. Both can also be passed as tool parameters (`max_turns`, `timeout_seconds`) or set as defaults via `/agents` settings.
+
+## Local process messaging
+
+The standalone [local messaging API](docs/local-messaging.md) provides a versioned
+Unix socket broker and client for future process runners. It is not connected to
+the current runner or tools yet.
 
 ## Requirements
 
