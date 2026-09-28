@@ -103,3 +103,25 @@ for (const removal of ["clearCompleted", "cleanup"] as const) {
     assert.equal((await cleanupWorktree(cwd, worktree)).removed, true);
   });
 }
+
+test("ordinary extension refuses RPC selection before recording a phantom agent", async () => {
+  const { createEventBus } = await import("@mariozechner/pi-coding-agent");
+  const manager = new AgentManager();
+  try {
+    assert.throws(
+      () =>
+        manager.spawn(
+          { events: createEventBus() } as any,
+          {} as any,
+          "general-purpose",
+          "never run",
+          { description: "missing host", runner: "rpc" },
+        ),
+      { code: "LIVE_PARENT_INVENTORY_UNAVAILABLE" },
+    );
+    assert.equal(manager.listAgents().length, 0);
+    assert.equal(manager.hasRunning(), false);
+  } finally {
+    manager.dispose();
+  }
+});

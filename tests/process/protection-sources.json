@@ -1,0 +1,22 @@
+{
+  "guard": {
+    "url": "https://git.forest-arowana.ts.net/Bastian/pi-agent-guard.git",
+    "base": "1aa3fcf381d1a3b4ae80ba4e5b9eca8656253e76",
+    "revision": "803390ec858524b11c72ba7bc937341bbdfc75e1",
+    "tree": "447244f94fd7e92dbebf74d30fcb5bb34bbc1c3a",
+    "archiveSha256": "de49de5c599eddf71ef8d2ca1d71cbdfa8dcc2b1cda8486a3e15ff8932b900aa",
+    "license": "MIT",
+    "licenseFile": null,
+    "archive": "sources/guard-803390ec858524b11c72ba7bc937341bbdfc75e1.tar"
+  },
+  "sandbox": {
+    "url": "https://git.forest-arowana.ts.net/Bastian/pi-agent-sandbox.git",
+    "base": "e43667c3c0eddd45a8b7776fd1f96db28a2d4a41",
+    "revision": "69800f6b9210fe26afe2ad6b722d17d9f68ea0f2",
+    "tree": "74aed8b086252939038e241f9faf5b64d95d6242",
+    "archiveSha256": "16ad0062f5b033018300d9dca8b7d7f2abe34117f1a83d699c11d36abb544ae3",
+    "license": "MIT",
+    "licenseFile": "LICENSE",
+    "archive": "sources/sandbox-69800f6b9210fe26afe2ad6b722d17d9f68ea0f2.tar"
+  }
+}

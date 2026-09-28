@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 {
   languages.javascript = {
     enable = true;
@@ -7,9 +7,14 @@
     pnpm.enable = true;
   };
 
-  packages = with pkgs; [
-    git
-  ];
+  packages =
+    with pkgs;
+    [
+      git
+      ripgrep
+      socat
+    ]
+    ++ lib.optional stdenv.isLinux bubblewrap;
 
   enterShell = ''
     echo "pi-agent-subagents devenv ready"
@@ -63,6 +68,34 @@
       after = [ "deps:install" ];
       before = [ "devenv:enterTest" ];
       exec = "pnpm run test:tui";
+      showOutput = true;
+    };
+
+    "test:process" = {
+      description = "Run RPC transport and deterministic companion-host tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run test:process";
+      showOutput = true;
+    };
+
+    "test:process:tui" = {
+      description = "Run the interactive companion-host RPC test.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run test:process:tui";
+      showOutput = true;
+    };
+
+    "test:process:protections" = {
+      description = "Verify real Guard and OS Sandbox, using the isolated VM on Linux.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec =
+        if pkgs.stdenv.isLinux then
+          "nix build --no-update-lock-file --print-build-logs .#checks.x86_64-linux.process-protections"
+        else
+          "pnpm run test:process:protections";
       showOutput = true;
     };
 

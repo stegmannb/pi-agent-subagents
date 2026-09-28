@@ -111,3 +111,11 @@ the current runner or tools yet.
 ## License
 
 MIT
+
+### RPC process runner
+
+The existing runner remains the default. The [companion SDK host](docs/process-runner.md)
+enables explicit `runner: "rpc"` delegation with persistent Pi sessions, retained
+worktrees, and verified Guard/Sandbox reproduction. Ordinary extension loading
+without that host refuses RPC selection because Pi 0.73.0 does not expose the
+full live resource inventory to extensions.

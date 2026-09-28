@@ -3,8 +3,8 @@
 `src/process-profile.ts` defines the PASA process launch contract, version 1.
 It resolves and checks a serializable plan. It does **not** start Pi, install
 packages, reserve a session, integrate with the existing runner, or prove that a
-child has loaded its protections. PASA-0004 must implement those steps before
-using a profile for a task.
+child has loaded its protections. The [RPC runner and companion host](process-runner.md) implement those steps;
+profile resolution alone is never permission to send a prompt.
 
 ## Supported Pi runtime
 
@@ -31,8 +31,8 @@ A caller must supply the effective parent model, even when it came from settings
 
 A plain `pi --mode rpc` invocation cannot enforce the whole profile. Pi's
 `--tools` option controls built-in tools, not the entire extension tool set;
-`--session` alone does not assign the planned header ID. The future runner must
-bind the full contract through its bootstrap and readiness handshake.
+`--session` alone does not assign the planned header ID. The runner binds the full contract through its private bootstrap and readiness
+inspection.
 
 ## Capture and trust boundary
 
@@ -140,10 +140,12 @@ bundles or a content-addressed copy of all transitive package dependencies.
 
 ## Required runner integration
 
-PASA-0004 must supply the trusted parent capture adapter, including explicit
-Guard/Sandbox adapters. If it cannot establish complete effective protection
-state, it must refuse delegation. Merely passing `protectionInventory: "complete"`
-is not evidence. This package supplies no production Guard/Sandbox adapter.
+The companion SDK host supplies the actual parent ResourceLoader and consumes
+the Guard/Sandbox snapshot-v1 adapters from their owning packages. Missing or
+unsupported adapters refuse delegation. Merely passing
+`protectionInventory: "complete"` is not evidence. See
+[the host contract](process-runner.md) for its productive entrypoint, strict
+classification, and child readiness checks.
 
 Before allowing the child to process a task, the runner must:
 

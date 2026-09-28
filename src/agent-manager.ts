@@ -2,6 +2,10 @@
  * agent-manager.ts — Tracks agents, background execution, resume support.
  */
 
+import { requireProcessRunner } from "./process-runner.ts";
+import { buildParentContext } from "./context.ts";
+import { getAgentConfig, getToolNamesForType } from "./agent-types.ts";
+import type { ProcessExecutionResult } from "./process-contract.ts";
 import { randomUUID } from "node:crypto";
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -35,7 +39,9 @@ interface SpawnArgs {
   options: SpawnOptions;
 }
 
-interface SpawnOptions {
+export interface SpawnOptions {
+  runner?: "in-process" | "rpc";
+  onProcessEvent?: import("./process-rpc.ts").ProcessRpcOptions["onEvent"];
   description: string;
   model?: Model<any>;
   maxTurns?: number;
@@ -59,6 +65,7 @@ interface SpawnOptions {
 
 export class AgentManager {
   private agents = new Map<string, AgentRecord>();
+  private processResumes = new Map<string, ProcessExecutionResult["resume"]>();
   private cleanupInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
@@ -120,6 +127,7 @@ export class AgentManager {
     prompt: string,
     options: SpawnOptions,
   ): string {
+    if (options.runner === "rpc") requireProcessRunner(pi.events);
     const id = randomUUID().slice(0, 17);
     const abortController = new AbortController();
     const record: AgentRecord = {
@@ -191,6 +199,79 @@ export class AgentManager {
         const wt = await createWorktree(sourceCwd, id, options.worktreeBase);
         record.worktree = wt;
         worktreeCwd = wt.path;
+      }
+      if (options.runner === "rpc") {
+        if (options.isolated) throw new Error("RPC_PROTECTION_OPT_OUT_FORBIDDEN");
+        const tools = getToolNamesForType(type).filter(
+          (name) =>
+            pi.getActiveTools().includes(name) &&
+            !getAgentConfig(type)?.disallowedTools?.includes(name),
+        );
+        let turns = 0;
+        const result = await requireProcessRunner(pi.events).execute({
+          taskId: id,
+          prompt: (options.inheritContext ? buildParentContext(ctx) : "") + prompt,
+          roleInstructions: getAgentConfig(type)?.systemPrompt,
+          cwd: worktreeCwd ?? sourceCwd,
+          role: {
+            name: type,
+            readOnly:
+              getAgentConfig(type)?.readOnly ??
+              tools.every((name) => ["read", "grep", "find", "ls"].includes(name)),
+            allowedTools: tools,
+          },
+          model: options.model
+            ? { provider: options.model.provider, id: options.model.id }
+            : undefined,
+          thinking: options.thinkingLevel,
+          limits: {
+            ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+            ...(options.timeoutSeconds ? { timeoutSeconds: options.timeoutSeconds } : {}),
+          },
+          signal: record.abortController!.signal,
+          onIdentity: (identity) => {
+            record.process = identity;
+          },
+          onEvent: (event) => {
+            options.onProcessEvent?.(event);
+            pi.events.emit("subagents:process_event", { identity: record.process, event });
+            if (event.type === "turn_end") options.onTurnEnd?.(++turns);
+            const e = event as import("@mariozechner/pi-coding-agent").AgentSessionEvent;
+            if (e.type === "tool_execution_start" || e.type === "tool_execution_end") {
+              if (e.type === "tool_execution_end") record.toolUses++;
+              options.onToolActivity?.({
+                type: e.type === "tool_execution_start" ? "start" : "end",
+                toolName: e.toolName,
+              });
+            }
+            if (e.type === "message_update" && e.assistantMessageEvent.type === "text_delta")
+              options.onTextDelta?.(
+                e.assistantMessageEvent.delta,
+                e.assistantMessageEvent.partial.content
+                  .filter((p) => p.type === "text")
+                  .map((p) => p.text)
+                  .join(""),
+              );
+            if (e.type === "message_end" && e.message.role === "assistant") {
+              addUsage(record.lifetimeUsage, e.message.usage);
+              options.onAssistantUsage?.(e.message.usage);
+            }
+            if (e.type === "compaction_end" && !e.aborted && e.result) {
+              const info = { reason: e.reason, tokensBefore: e.result.tokensBefore };
+              record.compactionCount++;
+              this.onCompact?.(record, info);
+              options.onCompaction?.(info);
+            }
+          },
+        });
+        this.processResumes.set(id, result.resume);
+        return {
+          responseText: result.responseText,
+          session: undefined,
+          aborted: false,
+          steered: false,
+          timedOut: false,
+        };
       }
       return runAgent(ctx, type, prompt, {
         pi,
@@ -343,7 +424,7 @@ export class AgentManager {
 
   async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
-    if (!record?.session) return undefined;
+    if (!record || (!record.session && !this.processResumes.has(id))) return undefined;
     if (record.worktreeActive || record.status === "running" || record.status === "waiting")
       return undefined;
 
@@ -356,20 +437,36 @@ export class AgentManager {
     record.worktreeActive = !!record.worktree;
 
     try {
-      const responseText = await resumeAgent(record.session, prompt, {
-        onToolActivity: (activity) => {
-          if (activity.type === "end") record.toolUses++;
-        },
-        onAssistantUsage: (usage) => {
-          addUsage(record.lifetimeUsage, usage);
-        },
-        onCompaction: (info) => {
-          record.compactionCount++;
-          this.onCompact?.(record, info);
-        },
-        signal,
-      });
-      record.status = "completed";
+      record.abortController = new AbortController();
+      const onAbort = () => record.abortController!.abort();
+      if (signal?.aborted) onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      let responseText: string;
+      try {
+        const resume = this.processResumes.get(id);
+        if (resume) {
+          const result = await resume(prompt, record.abortController.signal);
+          this.processResumes.set(id, result.resume);
+          responseText = result.responseText;
+        } else {
+          responseText = await resumeAgent(record.session!, prompt, {
+            onToolActivity: (activity) => {
+              if (activity.type === "end") record.toolUses++;
+            },
+            onAssistantUsage: (usage) => {
+              addUsage(record.lifetimeUsage, usage);
+            },
+            onCompaction: (info) => {
+              record.compactionCount++;
+              this.onCompact?.(record, info);
+            },
+            signal,
+          });
+        }
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+      }
+      if ((record.status as AgentRecord["status"]) !== "stopped") record.status = "completed";
       record.result = responseText;
       record.completedAt = Date.now();
     } catch (err) {
@@ -431,6 +528,7 @@ export class AgentManager {
     record.session?.dispose?.();
     record.session = undefined;
     this.agents.delete(id);
+    this.processResumes.delete(id);
   }
 
   private cleanup() {
@@ -512,5 +610,6 @@ export class AgentManager {
       record.session?.dispose();
     }
     this.agents.clear();
+    this.processResumes.clear();
   }
 }

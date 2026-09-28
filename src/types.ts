@@ -24,6 +24,7 @@ export interface AgentConfig {
   displayName?: string;
   description: string;
   builtinToolNames?: string[];
+  readOnly?: boolean;
   disallowedTools?: string[];
   extensions: true | string[] | false;
   skills: true | string[] | false;
@@ -62,6 +63,7 @@ export type LifetimeUsage = {
 };
 
 export interface AgentRecord {
+  process?: import("./process-contract.ts").ProcessObservation;
   id: string;
   type: SubagentType;
   description: string;

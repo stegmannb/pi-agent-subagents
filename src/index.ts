@@ -227,6 +227,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 function buildDetails(
   base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
   record: {
+    process?: import("./process-contract.ts").ProcessObservation;
     worktreeResult?: WorktreeStatus;
     toolUses: number;
     startedAt: number;
@@ -243,6 +244,7 @@ function buildDetails(
 ): AgentDetails {
   return {
     ...base,
+    process: record.process,
     worktree: record.worktreeResult,
     toolUses: record.toolUses,
     tokens: formatLifetimeTokens(record),
@@ -771,6 +773,12 @@ Guidelines:
             minimum: 1,
           }),
         ),
+        runner: Type.Optional(
+          Type.Union([Type.Literal("in-process"), Type.Literal("rpc")], {
+            description:
+              "Execution runner. Default in-process; rpc requires the companion SDK host and verified protection parity.",
+          }),
+        ),
         run_in_background: Type.Optional(
           Type.Boolean({ description: "Set to true to run in background." }),
         ),
@@ -982,7 +990,7 @@ Guidelines:
         if (params.resume) {
           const existing = manager.getRecord(params.resume);
           if (!existing) return textResult(`Agent not found: "${params.resume}".`);
-          if (!existing.session)
+          if (!existing.session && !existing.process)
             return textResult(`Agent "${params.resume}" has no active session to resume.`);
           const record = await manager.resume(params.resume, params.prompt, signal);
           if (!record) return textResult(`Failed to resume agent "${params.resume}".`);
@@ -1010,6 +1018,7 @@ Guidelines:
           try {
             id = manager.spawn(pi, ctx, subagentType, params.prompt, {
               description: params.description,
+              runner: params.runner,
               model,
               maxTurns: effectiveMaxTurns,
               timeoutSeconds: effectiveTimeoutSeconds,
@@ -1127,6 +1136,7 @@ Guidelines:
         try {
           record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
             description: params.description,
+            runner: params.runner,
             model,
             maxTurns: effectiveMaxTurns,
             timeoutSeconds: effectiveTimeoutSeconds,

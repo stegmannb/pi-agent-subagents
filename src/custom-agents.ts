@@ -49,6 +49,7 @@ function loadFromDir(
       displayName: str(fm.display_name),
       description: str(fm.description) ?? name,
       builtinToolNames: csvList(fm.tools, BUILTIN_TOOL_NAMES),
+      readOnly: fm.read_only === true,
       disallowedTools: csvListOptional(fm.disallowed_tools),
       extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
       skills: inheritField(fm.skills ?? fm.inherit_skills),

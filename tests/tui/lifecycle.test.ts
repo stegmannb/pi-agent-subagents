@@ -316,7 +316,9 @@ test(
       await app.choose("Running agents (");
       await app.expect("completed");
       await app.escape();
+      await app.expect("Create new agent");
       await app.escape();
+      await app.absent("Create new agent");
       await app.editorReady();
     });
   },

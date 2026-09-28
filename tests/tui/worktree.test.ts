@@ -60,12 +60,14 @@ for (const mode of ["complete", "error", "abort", "parent-end"] as const) {
               run_in_background: mode !== "abort",
             }),
         );
-        const wt = await retained(app);
-        assert.equal(wt.baseCommit, base);
         await app.waitFor(
           () => app.readEvents("events.ndjson").some((e) => e.event === "waiting"),
           "child waits",
         );
+        // Git exposes the worktree before its registration write completes.
+        // The child starts only after createWorktree has finished that write.
+        const wt = await retained(app);
+        assert.equal(wt.baseCommit, base);
         if (work !== "clean") {
           writeFileSync(join(wt.path, "tracked"), "staged child work\n");
           git(wt.path, "add", "tracked");

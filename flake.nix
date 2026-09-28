@@ -40,6 +40,18 @@
           ];
         };
 
+      checks.x86_64-linux.process-protections =
+        let
+          pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        in
+        import ./nix/process-protections.nix {
+          inherit pkgs;
+          mkProtectionVM = import ./nix/protection-vm.nix {
+            inherit pkgs;
+            inherit (nixpkgs) lib;
+          };
+        };
+
       packages = forAllSystems (
         system:
         let

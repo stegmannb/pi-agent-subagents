@@ -25,13 +25,15 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 0700 "$XDG_RUNTIME_DIR"
-          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 --command bash -euo pipefail -c '
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 nixpkgs#git --command bash -euo pipefail -c '
             pnpm install --frozen-lockfile
             pnpm run ci:fmt
             pnpm run ci:lint
             pnpm run ci:check
             pnpm test
             pnpm run test:tui
+            pnpm run test:process
+            pnpm run test:process:tui
           '
       - name: Upload TUI failure artifacts
         if: always()

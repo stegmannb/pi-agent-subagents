@@ -54,6 +54,7 @@ export interface AgentActivity {
 }
 
 export interface AgentDetails {
+  process?: import("../process-contract.ts").ProcessObservation;
   worktree?: import("../worktree.ts").WorktreeStatus;
   displayName: string;
   description: string;

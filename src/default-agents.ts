@@ -27,6 +27,7 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       displayName: "Explore",
       description: "Fast codebase exploration agent (read-only)",
       builtinToolNames: READ_ONLY_TOOLS,
+      readOnly: true,
       extensions: true,
       skills: true,
       model: "anthropic/claude-haiku-4-5-20251001",
@@ -63,6 +64,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
       displayName: "Plan",
       description: "Software architect for implementation planning (read-only)",
       builtinToolNames: READ_ONLY_TOOLS,
+      readOnly: true,
       extensions: true,
       skills: true,
       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
@@ -106,6 +108,7 @@ List 3-5 files most critical for implementing this plan:
       displayName: "Code Review",
       description: "Code reviewer that analyzes code for issues and improvements (read-only)",
       builtinToolNames: READ_ONLY_TOOLS,
+      readOnly: true,
       extensions: true,
       skills: true,
       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
@@ -159,6 +162,7 @@ You are STRICTLY PROHIBITED from modifying any files.
       displayName: "Security Audit",
       description: "Security auditor that checks for vulnerabilities (read-only)",
       builtinToolNames: READ_ONLY_TOOLS,
+      readOnly: true,
       extensions: true,
       skills: true,
       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
