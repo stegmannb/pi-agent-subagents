@@ -18,6 +18,28 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
+      lib.mkProtectionVM = import ./nix/protection-vm.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        inherit (nixpkgs) lib;
+      };
+
+      checks.x86_64-linux.protection-vm-smoke =
+        let
+          pkgs = nixpkgs.legacyPackages.x86_64-linux;
+          mkProtectionVM = import ./nix/protection-vm.nix {
+            inherit pkgs;
+            inherit (nixpkgs) lib;
+          };
+        in
+        mkProtectionVM {
+          name = "protection-vm-smoke";
+          preparedBundle = ./tests/vm;
+          command = [
+            "node"
+            "smoke.mjs"
+          ];
+        };
+
       packages = forAllSystems (
         system:
         let

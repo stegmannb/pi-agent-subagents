@@ -1,0 +1,37 @@
+name: protection-vm
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    sandbox = false
+    keep-build-log = false
+
+jobs:
+  protection-vm-smoke:
+    runs-on: [k8s-executor-medium, amd64]
+    timeout-minutes: 45
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Boot TCG guest and require real Bubblewrap enforcement
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/protection-vm
+          nix build --no-update-lock-file --print-build-logs \
+            --out-link result .#checks.x86_64-linux.protection-vm-smoke \
+            2>&1 | tee test-results/protection-vm/build.log
+          cp -R result/. test-results/protection-vm/
+      - name: Upload VM logs
+        if: always()
+        uses: https://data.forgejo.org/actions/upload-artifact@c24449f33cd45d4826c6702db7e49f7cdb9b551d # v3-node20
+        with:
+          name: protection-vm-logs
+          path: test-results/protection-vm/
+          if-no-files-found: error
