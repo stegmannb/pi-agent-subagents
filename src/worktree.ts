@@ -7,11 +7,20 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export interface SnapshotInfo {
+  parentPath: string;
+  parentHead: string;
+  ref: string;
+  excludePaths: string[];
+  untrackedPaths: string[];
+}
+
 export interface WorktreeInfo {
   /** Git's real per-worktree administrative directory. */
   id: string;
   path: string;
   baseCommit: string;
+  snapshot?: SnapshotInfo;
 }
 
 export interface WorktreeStatus extends WorktreeInfo {
@@ -35,10 +44,12 @@ interface Registration extends WorktreeInfo {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     timeout: 30_000,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    env: { ...env, GIT_OPTIONAL_LOCKS: "0" },
   });
   return stdout.trim();
 }
@@ -121,7 +132,12 @@ export async function loadWorktree(path: string): Promise<WorktreeInfo> {
   const canonicalPath = await realpath(path);
   const id = await realpath(await git(canonicalPath, ["rev-parse", "--absolute-git-dir"]));
   const saved: Registration = JSON.parse(await readFile(join(id, "pi-subagents.json"), "utf8"));
-  const worktree = { id, path: canonicalPath, baseCommit: saved.baseCommit };
+  const worktree = {
+    id,
+    path: canonicalPath,
+    baseCommit: saved.baseCommit,
+    ...(saved.snapshot ? { snapshot: saved.snapshot } : {}),
+  };
   await registered(worktree);
   return worktree;
 }
@@ -199,6 +215,9 @@ export function formatWorktreeStatus(status: WorktreeStatus): string {
     `Worktree: ${status.path} (${status.exists ? "retained" : "missing"})`,
     `Worktree ID: ${status.id}`,
     `Base: ${status.baseCommit}`,
+    status.snapshot
+      ? `Snapshot parent: ${status.snapshot.parentHead}; child delta base: ${status.baseCommit}`
+      : undefined,
     `Head: ${status.headCommit ?? "unknown"} (${status.branch ?? (status.headCommit ? "detached" : "unknown")})`,
     `Changes: ${status.hasUncommittedChanges === undefined ? "unknown" : status.hasUncommittedChanges ? "uncommitted" : "clean"}; commits beyond base: ${status.hasCommits === undefined ? "unknown" : status.hasCommits ? "yes" : "no"}`,
     status.worktreeError,
@@ -206,3 +225,6 @@ export function formatWorktreeStatus(status: WorktreeStatus): string {
     .filter(Boolean)
     .join("\n");
 }
+
+export { createSnapshotWorktree, integrateSnapshotWorktree } from "./worktree-snapshot.ts";
+export type { SnapshotOptions, IntegrationResult } from "./worktree-snapshot.ts";

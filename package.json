@@ -34,7 +34,8 @@
     "test:tui:repeat": "node tests/tui/repeat.mjs",
     "ci:fmt": "oxfmt --check src/ tests/ index.ts",
     "ci:lint": "pnpm run lint",
-    "ci:check": "pnpm run check"
+    "ci:check": "pnpm run check",
+    "test:snapshots": "node --test src/worktree-snapshot.test.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": ">=0.70.5",

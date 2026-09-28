@@ -51,6 +51,13 @@
       showOutput = true;
     };
 
+    "test:snapshots" = {
+      description = "Run real Git snapshot and integration tests.";
+      after = [ "deps:install" ];
+      exec = "pnpm run test:snapshots";
+      showOutput = true;
+    };
+
     "test:tui" = {
       description = "Run the real pi TUI test suite.";
       after = [ "deps:install" ];
