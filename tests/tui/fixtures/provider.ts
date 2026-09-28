@@ -98,6 +98,15 @@ function streamScript(model: Model<Api>, context: Context, options?: SimpleStrea
           .filter((part) => part.type === "text")
           .map((part) => part.text)
           .join(" ")}`;
+      } else if (prompt.startsWith("TUI:worktree:")) {
+        response = tool("Agent", {
+          description: "Retained worktree agent",
+          subagent_type: "general-purpose",
+          isolation: "worktree",
+          ...JSON.parse(prompt.slice("TUI:worktree:".length)),
+        });
+      } else if (prompt.startsWith("TUI:cleanup:")) {
+        response = tool("cleanup_subagent_worktree", { path: prompt.slice("TUI:cleanup:".length) });
       } else if (prompt.startsWith("TUI:agent:")) {
         response = tool("Agent", {
           prompt: prompt.slice("TUI:agent:".length),
@@ -140,6 +149,9 @@ function streamScript(model: Model<Api>, context: Context, options?: SimpleStrea
         response = tool("steer_subagent", { agent_id: id, message: parts.join(":") });
       } else if (prompt === "CHILD:error") {
         throw new Error("Scripted child failure");
+      } else if (prompt.startsWith("CHILD:wait-error:")) {
+        await waitForGate(prompt.slice("CHILD:wait-error:".length), options?.signal);
+        throw new Error("Scripted child failure after gate");
       } else if (prompt.startsWith("CHILD:wait:")) {
         const gate = prompt.slice("CHILD:wait:".length);
         await waitForGate(gate, options?.signal);

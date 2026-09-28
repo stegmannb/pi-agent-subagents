@@ -3,7 +3,7 @@
  */
 
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import type { WorktreeCleanupResult } from "./worktree.ts";
+import type { WorktreeInfo, WorktreeStatus } from "./worktree.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -52,6 +52,7 @@ export interface AgentInvocation {
   runInBackground?: boolean;
   isolation?: IsolationMode;
   cwd?: string;
+  worktreeBase?: string;
 }
 
 export type LifetimeUsage = {
@@ -85,8 +86,9 @@ export interface AgentRecord {
   joinMode?: JoinMode;
   resultConsumed?: boolean;
   pendingSteers?: string[];
-  worktree?: { path: string; branch: string };
-  worktreeResult?: WorktreeCleanupResult;
+  worktree?: WorktreeInfo;
+  worktreeResult?: WorktreeStatus;
+  worktreeActive?: boolean;
   toolCallId?: string;
   outputFile?: string;
   outputCleanup?: () => void;
@@ -107,6 +109,7 @@ export interface HelpRequestDetails {
 }
 
 export interface NotificationDetails {
+  worktree?: WorktreeStatus;
   id: string;
   description: string;
   status: string;

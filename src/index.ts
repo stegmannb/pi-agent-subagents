@@ -80,9 +80,18 @@ import {
 } from "./ui/agent-widget.ts";
 import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.ts";
 
+import {
+  cleanupWorktree,
+  formatWorktreeStatus,
+  inspectWorktree,
+  loadWorktree,
+  type WorktreeStatus,
+} from "./worktree.ts";
+
 // ---- Helpers ----
 
 function textResult(msg: string, details?: AgentDetails) {
+  if (details?.worktree) msg = `${formatWorktreeStatus(details.worktree)}\n\n${msg}`;
   return {
     content: [{ type: "text" as const, text: msg }],
     details: details as any,
@@ -203,6 +212,9 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
     `<status>${escapeXml(status)}</status>`,
     reportStatusLine,
     `<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
+    record.worktreeResult
+      ? `<worktree>${escapeXml(formatWorktreeStatus(record.worktreeResult))}</worktree>`
+      : null,
     `<result>${escapeXml(resultPreview)}</result>`,
     artifactsLine,
     `<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses><duration_ms>${durationMs}</duration_ms></usage>`,
@@ -215,6 +227,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 function buildDetails(
   base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
   record: {
+    worktreeResult?: WorktreeStatus;
     toolUses: number;
     startedAt: number;
     completedAt?: number;
@@ -230,6 +243,7 @@ function buildDetails(
 ): AgentDetails {
   return {
     ...base,
+    worktree: record.worktreeResult,
     toolUses: record.toolUses,
     tokens: formatLifetimeTokens(record),
     turnCount: activity?.turnCount,
@@ -264,6 +278,7 @@ function buildNotificationDetails(
     error: record.error,
     reportStatus: report?.status,
     artifacts: report?.artifacts,
+    worktree: record.worktreeResult,
     resultPreview: rawResult
       ? rawResult.length > resultMaxLen
         ? rawResult.slice(0, resultMaxLen) + "…"
@@ -332,6 +347,8 @@ export default function (pi: ExtensionAPI) {
           const preview = d.resultPreview.split("\n")[0]?.slice(0, 80) ?? "";
           line += "\n  " + theme.fg("dim", `⎿  ${preview}`);
         }
+
+        if (d.worktree) line += "\n" + theme.fg("dim", formatWorktreeStatus(d.worktree));
 
         if (d.outputFile) {
           line += "\n  " + theme.fg("muted", `transcript: ${d.outputFile}`);
@@ -512,6 +529,7 @@ export default function (pi: ExtensionAPI) {
       id: record.id,
       type: record.type,
       description: record.description,
+      worktree: record.worktreeResult,
       result: record.result,
       error: record.error,
       status: record.status,
@@ -539,6 +557,7 @@ export default function (pi: ExtensionAPI) {
         type: record.type,
         description: record.description,
         status: record.status,
+        worktree: record.worktreeResult,
         result: record.result,
         error: record.error,
         startedAt: record.startedAt,
@@ -721,7 +740,7 @@ Guidelines:
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Set cwd to the git repository the agent should work in whenever the parent session cwd is a workspace, a parent folder, or otherwise not that repository. Workspace folders with nested repos are common.
 - Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
-- Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD.
+- Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD unless worktree_base specifies an existing ref. Worktrees remain until explicit cleanup.
 - Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
 - Use timeout_seconds to bound wall-clock runtime for agents that might hang or run too long; the agent is aborted once the limit is reached, independent of turn count.`,
@@ -768,10 +787,16 @@ Guidelines:
               "Git repository the agent should run in. Relative paths resolve from the parent session cwd. Set this whenever the session cwd is not that repository (nested repos, workspace folders). Required for isolation: worktree.",
           }),
         ),
+        worktree_base: Type.Optional(
+          Type.String({
+            description:
+              "Existing branch, tag or commit for worktree isolation. Resolved to a fixed commit before creation. Default: HEAD. Requires isolation: worktree.",
+          }),
+        ),
         isolation: Type.Optional(
           Type.Literal("worktree", {
             description:
-              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a temporary worktree from HEAD. Omit only if cwd is not a git repo, has no commits, or the agent must see uncommitted/untracked files.',
+              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a retained worktree from HEAD or worktree_base. Omit only if cwd is not a git repo, has no commits, or the agent must see uncommitted/untracked files.',
           }),
         ),
       }),
@@ -795,6 +820,9 @@ Guidelines:
           return new Text(text, 0, 0);
         }
 
+        const worktreeText = details.worktree
+          ? "\n" + theme.fg("dim", formatWorktreeStatus(details.worktree))
+          : "";
         const stats = (d: AgentDetails) => {
           const parts: string[] = [];
           if (d.modelName) parts.push(d.modelName);
@@ -811,7 +839,7 @@ Guidelines:
           const s = stats(details);
           let line = theme.fg("accent", frame) + (s ? " " + s : "");
           line += "\n" + theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`);
-          return new Text(line, 0, 0);
+          return new Text(line + worktreeText, 0, 0);
         }
 
         if (details.status === "background") {
@@ -833,21 +861,24 @@ Guidelines:
           if (expanded) {
             const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
             if (resultText) {
-              const lines = resultText.split("\n").slice(0, 50);
+              const body = details.worktree
+                ? resultText.slice(formatWorktreeStatus(details.worktree).length).trimStart()
+                : resultText;
+              const lines = body.split("\n").slice(0, 50);
               for (const l of lines) line += "\n" + theme.fg("dim", `  ${l}`);
             }
           } else {
             const doneText = details.status === "steered" ? "Wrapped up (turn limit)" : "Done";
             line += "\n" + theme.fg("dim", `  ⎿  ${doneText}`);
           }
-          return new Text(line, 0, 0);
+          return new Text(line + worktreeText, 0, 0);
         }
 
         if (details.status === "stopped") {
           const s = stats(details);
           let line = theme.fg("dim", "■") + (s ? " " + s : "");
           line += "\n" + theme.fg("dim", "  ⎿  Stopped");
-          return new Text(line, 0, 0);
+          return new Text(line + worktreeText, 0, 0);
         }
 
         const s = stats(details);
@@ -862,7 +893,7 @@ Guidelines:
               `  ⎿  ${details.timedOut ? "Aborted (timeout exceeded)" : "Aborted (max turns exceeded)"}`,
             );
         }
-        return new Text(line, 0, 0);
+        return new Text(line + worktreeText, 0, 0);
       },
 
       execute: async (toolCallId, params, signal, onUpdate, ctx) => {
@@ -899,6 +930,9 @@ Guidelines:
         const runInBackground = resolvedConfig.runInBackground;
         const isolated = resolvedConfig.isolated;
         const isolation = resolvedConfig.isolation;
+        if (params.worktree_base !== undefined && (isolation !== "worktree" || params.resume)) {
+          return textResult("worktree_base requires a new Agent with isolation: worktree.");
+        }
         const agentCwd = resolveAgentCwd(ctx.cwd, params.cwd);
         if (!params.resume) {
           try {
@@ -930,6 +964,7 @@ Guidelines:
           inheritContext,
           runInBackground,
           isolation,
+          worktreeBase: params.worktree_base,
           cwd: agentCwd,
         };
         const { tags: invocationTags } = buildInvocationTags(agentInvocation);
@@ -983,6 +1018,7 @@ Guidelines:
               thinkingLevel: thinking,
               isBackground: true,
               isolation,
+              worktreeBase: params.worktree_base,
               cwd: agentCwd,
               invocation: agentInvocation,
               ...bgCallbacks,
@@ -1098,6 +1134,7 @@ Guidelines:
             inheritContext,
             thinkingLevel: thinking,
             isolation,
+            worktreeBase: params.worktree_base,
             cwd: agentCwd,
             invocation: agentInvocation,
             signal,
@@ -1165,6 +1202,7 @@ Guidelines:
           }
         }
 
+        if (record.worktree) record.worktreeResult = await inspectWorktree(record.worktree);
         const displayName = getDisplayName(record.type);
         const duration = formatDuration(record.startedAt, record.completedAt);
         const tokens = formatLifetimeTokens(record);
@@ -1209,7 +1247,52 @@ Guidelines:
           if (conversation) output += `\n\n--- Agent Conversation ---\n${conversation}`;
         }
 
+        if (record.worktreeResult)
+          output = `${formatWorktreeStatus(record.worktreeResult)}\n\n${output}`;
         return textResult(output);
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "cleanup_subagent_worktree",
+      label: "Cleanup Agent Worktree",
+      description:
+        "Explicitly remove an owned, inactive worktree after inspection/integration. Refuses uncommitted files and commits not reachable from cwd HEAD. No force override.",
+      parameters: Type.Object({
+        path: Type.String({ description: "Retained worktree path returned by Agent." }),
+        cwd: Type.Optional(
+          Type.String({
+            description:
+              "Repository checkout whose HEAD contains the integrated work. Defaults to session cwd.",
+          }),
+        ),
+      }),
+      execute: async (_id, params, _signal, _update, ctx) => {
+        try {
+          const worktree = await loadWorktree(resolveAgentCwd(ctx.cwd, params.path));
+          if (
+            manager
+              .listAgents()
+              .some(
+                (record) =>
+                  record.worktree?.id === worktree.id &&
+                  (["running", "waiting", "queued"].includes(record.status) ||
+                    record.worktreeActive),
+              )
+          ) {
+            return textResult("Cleanup refused: agent is still active.");
+          }
+          const result = await cleanupWorktree(resolveAgentCwd(ctx.cwd, params.cwd), worktree);
+          return textResult(
+            result.removed ? `Removed worktree: ${result.path}` : formatWorktreeStatus(result),
+          );
+        } catch (error) {
+          return textResult(
+            `Cleanup refused: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       },
     }),
   );

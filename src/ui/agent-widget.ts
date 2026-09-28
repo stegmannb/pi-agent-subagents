@@ -54,6 +54,7 @@ export interface AgentActivity {
 }
 
 export interface AgentDetails {
+  worktree?: import("../worktree.ts").WorktreeStatus;
   displayName: string;
   description: string;
   subagentType: string;

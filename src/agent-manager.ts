@@ -15,7 +15,7 @@ import type {
 } from "./types.ts";
 import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
-import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.ts";
+import { createWorktree, inspectWorktree } from "./worktree.ts";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
@@ -45,6 +45,7 @@ interface SpawnOptions {
   thinkingLevel?: ThinkingLevel;
   isBackground?: boolean;
   isolation?: IsolationMode;
+  worktreeBase?: string;
   cwd?: string;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
@@ -160,6 +161,7 @@ export class AgentManager {
     { pi, ctx, type, prompt, options }: SpawnArgs,
   ) {
     record.status = "running";
+    record.worktreeActive = options.isolation === "worktree";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;
     // Unblock any caller waiting on readyPromise
@@ -186,7 +188,7 @@ export class AgentManager {
     const promise = (async () => {
       let worktreeCwd: string | undefined;
       if (options.isolation === "worktree") {
-        const wt = await createWorktree(sourceCwd, id);
+        const wt = await createWorktree(sourceCwd, id, options.worktreeBase);
         record.worktree = wt;
         worktreeCwd = wt.path;
       }
@@ -249,8 +251,9 @@ export class AgentManager {
         }
 
         if (record.worktree) {
-          await cleanupWorktree(sourceCwd, record.worktree, options.description);
+          record.worktreeResult = await inspectWorktree(record.worktree);
         }
+        record.worktreeActive = false;
 
         if (options.isBackground) {
           this.runningBackground--;
@@ -281,21 +284,9 @@ export class AgentManager {
         }
 
         if (record.worktree) {
-          try {
-            const wtResult = await cleanupWorktree(sourceCwd, record.worktree, options.description);
-            record.worktreeResult = wtResult;
-            if (wtResult.hasChanges && wtResult.branch) {
-              record.error =
-                (record.error ?? "") +
-                `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
-            }
-            if (wtResult.worktreeError) {
-              record.error = (record.error ?? "") + `\n\n---\n⚠️ ${wtResult.worktreeError}`;
-            }
-          } catch {
-            /* ignore */
-          }
+          record.worktreeResult = await inspectWorktree(record.worktree);
         }
+        record.worktreeActive = false;
 
         if (record.outputFile) {
           appendErrorEntry(record.outputFile, id, record.error, sourceCwd);
@@ -353,13 +344,16 @@ export class AgentManager {
   async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
     if (!record?.session) return undefined;
-    if (record.status === "running" || record.status === "waiting") return undefined;
+    if (record.worktreeActive || record.status === "running" || record.status === "waiting")
+      return undefined;
 
     record.status = "running";
     record.startedAt = Date.now();
     record.completedAt = undefined;
     record.result = undefined;
     record.error = undefined;
+    record.worktreeResult = undefined;
+    record.worktreeActive = !!record.worktree;
 
     try {
       const responseText = await resumeAgent(record.session, prompt, {
@@ -384,6 +378,8 @@ export class AgentManager {
       record.completedAt = Date.now();
     }
 
+    if (record.worktree) record.worktreeResult = await inspectWorktree(record.worktree);
+    record.worktreeActive = false;
     return record;
   }
 
@@ -430,6 +426,8 @@ export class AgentManager {
   }
 
   private removeRecord(id: string, record: AgentRecord): void {
+    // A stopped status acknowledges cancellation; the execution may still own the worktree.
+    if (record.worktreeActive) return;
     record.session?.dispose?.();
     record.session = undefined;
     this.agents.delete(id);
@@ -514,8 +512,5 @@ export class AgentManager {
       record.session?.dispose();
     }
     this.agents.clear();
-    pruneWorktrees(process.cwd()).catch(() => {
-      /* ignore */
-    });
   }
 }

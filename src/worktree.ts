@@ -1,162 +1,208 @@
-/**
- * worktree.ts — Git worktree isolation for agents.
- */
-
+/** Git worktrees retained until an explicit, checked cleanup. */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
 export interface WorktreeInfo {
+  /** Git's real per-worktree administrative directory. */
+  id: string;
   path: string;
-  branch: string;
+  baseCommit: string;
 }
 
-export interface WorktreeCleanupResult {
-  hasChanges: boolean;
+export interface WorktreeStatus extends WorktreeInfo {
+  exists: boolean;
+  headCommit?: string;
+  /** Present only when HEAD names an actual branch. */
   branch?: string;
-  path?: string;
-  /** Set when a git operation failed and the worktree was preserved for manual recovery. */
+  hasUncommittedChanges?: boolean;
+  hasCommits?: boolean;
+  hasChanges?: boolean;
   worktreeError?: string;
 }
 
-function formatCommandError(error: unknown): string {
-  if (typeof error === "object" && error !== null) {
-    const commandError = error as { stderr?: unknown; message?: unknown };
-    const stderr = typeof commandError.stderr === "string" ? commandError.stderr.trim() : "";
-    if (stderr) return stderr;
-    if (typeof commandError.message === "string") return commandError.message;
-  }
-  return String(error);
+export interface WorktreeCleanupResult extends WorktreeStatus {
+  removed: boolean;
 }
 
-function worktreeSetupError(cwd: string, command: string[], error: unknown): Error {
-  return new Error(
-    [
-      `Cannot create an isolated worktree from ${cwd}.`,
-      `Failed command: git ${command.join(" ")}`,
-      `Git error: ${formatCommandError(error)}`,
-      "Hint: pass cwd pointing to a Git repository with at least one commit, or omit worktree isolation. Worktree isolation starts from HEAD and does not include uncommitted or untracked changes.",
-    ].join("\n"),
+interface Registration extends WorktreeInfo {
+  agentId: string;
+  commonDir: string;
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    timeout: 30_000,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return stdout.trim();
+}
+
+function reason(error: unknown): string {
+  const e = error as { stderr?: string; message?: string };
+  return e?.stderr?.trim() || e?.message || String(error);
+}
+
+async function commonDir(cwd: string): Promise<string> {
+  return realpath(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+}
+
+async function resolveCommit(cwd: string, ref: string): Promise<string> {
+  return git(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+}
+
+export async function createWorktree(
+  cwd: string,
+  agentId: string,
+  base = "HEAD",
+): Promise<WorktreeInfo> {
+  let command = ["rev-parse", "--is-inside-work-tree"];
+  let path: string | undefined;
+  try {
+    if ((await git(cwd, command)) !== "true") throw new Error("cwd is not a working tree");
+    command = ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`];
+    const baseCommit = await git(cwd, command);
+    const common = await commonDir(cwd);
+    // Store outside temporary directories and outside the parent's tracked files.
+    const root = join(common, "pi-agent-worktrees");
+    await mkdir(root, { recursive: true });
+    path = join(root, randomUUID());
+    command = ["worktree", "add", "--detach", path, baseCommit];
+    await git(cwd, command);
+    path = await realpath(path);
+    const id = await realpath(await git(path, ["rev-parse", "--absolute-git-dir"]));
+    const registration: Registration = { id, path, baseCommit, agentId, commonDir: common };
+    await writeFile(join(id, "pi-subagents.json"), JSON.stringify(registration), { flag: "wx" });
+    return { id, path, baseCommit };
+  } catch (error) {
+    throw new Error(
+      [
+        `Cannot create an isolated worktree from ${cwd}.`,
+        `Failed command: git ${command.join(" ")}`,
+        `Git error: ${reason(error)}`,
+        path ? `Any partially created worktree is preserved at ${path}.` : "",
+        "Hint: pass cwd pointing to a Git repository with at least one commit and an existing base. Worktree isolation does not include uncommitted or untracked changes.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+}
+
+/** Check the registration against Git identity, not a caller-supplied path alone. */
+async function registered(worktree: WorktreeInfo): Promise<Registration> {
+  const registration: Registration = JSON.parse(
+    await readFile(join(worktree.id, "pi-subagents.json"), "utf8"),
   );
+  for (const key of ["id", "path", "baseCommit"] as const) {
+    if (registration[key] !== worktree[key])
+      throw new Error(`Worktree registration mismatch: ${key}`);
+  }
+  if ((await lstat(worktree.path)).isSymbolicLink()) throw new Error("Worktree path is a symlink");
+  if (
+    (await realpath(worktree.path)) !== worktree.path ||
+    (await realpath(await git(worktree.path, ["rev-parse", "--absolute-git-dir"]))) !==
+      worktree.id ||
+    (await commonDir(worktree.path)) !== registration.commonDir ||
+    (await realpath(await git(worktree.path, ["rev-parse", "--show-toplevel"]))) !== worktree.path
+  ) {
+    throw new Error("Worktree identity no longer matches its registration");
+  }
+  return registration;
 }
 
-export async function createWorktree(cwd: string, agentId: string): Promise<WorktreeInfo> {
-  const verifyCommand = ["rev-parse", "--is-inside-work-tree"];
-  try {
-    await execFileAsync("git", verifyCommand, { cwd, timeout: 5000 });
-  } catch (error) {
-    throw worktreeSetupError(cwd, verifyCommand, error);
-  }
+/** Reload an owned worktree after its parent session has ended. */
+export async function loadWorktree(path: string): Promise<WorktreeInfo> {
+  const canonicalPath = await realpath(path);
+  const id = await realpath(await git(canonicalPath, ["rev-parse", "--absolute-git-dir"]));
+  const saved: Registration = JSON.parse(await readFile(join(id, "pi-subagents.json"), "utf8"));
+  const worktree = { id, path: canonicalPath, baseCommit: saved.baseCommit };
+  await registered(worktree);
+  return worktree;
+}
 
-  const headCommand = ["rev-parse", "HEAD"];
+/** Read-only on every lifecycle path, including failure and abort. */
+export async function inspectWorktree(worktree: WorktreeInfo): Promise<WorktreeStatus> {
+  let exists = false;
   try {
-    await execFileAsync("git", headCommand, { cwd, timeout: 5000 });
+    await lstat(worktree.path);
+    exists = true;
+    await registered(worktree);
+    const headCommit = await resolveCommit(worktree.path, "HEAD");
+    // Include ignored files: explicit cleanup must not discard local build/output files either.
+    const status = await git(worktree.path, [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignored",
+    ]);
+    const branchRef = await git(worktree.path, ["rev-parse", "--symbolic-full-name", "HEAD"]);
+    const branch = branchRef.startsWith("refs/heads/") ? branchRef.slice(11) : undefined;
+    const hasUncommittedChanges = status.length > 0;
+    const hasCommits = headCommit !== worktree.baseCommit;
+    return {
+      ...worktree,
+      exists,
+      headCommit,
+      branch,
+      hasUncommittedChanges,
+      hasCommits,
+      hasChanges: hasUncommittedChanges || hasCommits,
+    };
   } catch (error) {
-    throw worktreeSetupError(cwd, headCommand, error);
-  }
-
-  const branch = `pi-agent-${agentId}`;
-  const suffix = randomUUID().slice(0, 8);
-  const worktreePath = join(tmpdir(), `pi-agent-${agentId}-${suffix}`);
-  const addCommand = ["worktree", "add", "--detach", worktreePath, "HEAD"];
-
-  try {
-    await execFileAsync("git", addCommand, { cwd, timeout: 30000 });
-    return { path: worktreePath, branch };
-  } catch (error) {
-    throw worktreeSetupError(cwd, addCommand, error);
+    return { ...worktree, exists, worktreeError: `Cannot inspect worktree: ${reason(error)}` };
   }
 }
 
+/** No force override. Stop the child before calling this explicit operation. */
 export async function cleanupWorktree(
   cwd: string,
   worktree: WorktreeInfo,
-  agentDescription: string,
 ): Promise<WorktreeCleanupResult> {
-  if (!existsSync(worktree.path)) {
-    return { hasChanges: false };
-  }
-
+  const status = await inspectWorktree(worktree);
   try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
-      cwd: worktree.path,
-      timeout: 10000,
-    });
-    const status = stdout.trim();
-
-    if (!status) {
-      await removeWorktree(cwd, worktree.path);
-      return { hasChanges: false };
+    if (status.worktreeError) throw new Error(status.worktreeError);
+    const registration = await registered(worktree);
+    if ((await commonDir(cwd)) !== registration.commonDir)
+      throw new Error("Worktree belongs to another repository");
+    if ((await realpath(await git(cwd, ["rev-parse", "--show-toplevel"]))) === worktree.path) {
+      throw new Error("Cleanup requires a separate integration checkout, not the child worktree");
     }
-
-    await execFileAsync("git", ["add", "-A"], {
-      cwd: worktree.path,
-      timeout: 10000,
-    });
-    const safeDesc = agentDescription.slice(0, 200);
-    await execFileAsync("git", ["commit", "-m", `pi-agent: ${safeDesc}`], {
-      cwd: worktree.path,
-      timeout: 10000,
-    });
-
-    let branchName = worktree.branch;
-    try {
-      await execFileAsync("git", ["branch", branchName], {
-        cwd: worktree.path,
-        timeout: 5000,
-      });
-    } catch {
-      branchName = `${worktree.branch}-${Date.now()}`;
-      await execFileAsync("git", ["branch", branchName], {
-        cwd: worktree.path,
-        timeout: 5000,
-      });
+    if (status.hasUncommittedChanges) throw new Error("Worktree has uncommitted or ignored files");
+    // Conservative V1: only ancestry proves integration. Squash/cherry-pick equivalence does not.
+    if (status.hasCommits) {
+      const integratedHead = await resolveCommit(cwd, "HEAD");
+      try {
+        await git(cwd, ["merge-base", "--is-ancestor", status.headCommit!, integratedHead]);
+      } catch {
+        throw new Error("Worktree commits are not integrated into the cleanup caller's HEAD");
+      }
     }
-
-    await removeWorktree(cwd, worktree.path);
-
-    return { hasChanges: true, branch: branchName, path: worktree.path };
-  } catch (err) {
-    // Do NOT remove the worktree — preserve it so the user can recover their work.
-    const reason = err instanceof Error ? err.message : String(err);
+    await git(cwd, ["worktree", "remove", worktree.path]);
+    return { ...status, exists: false, removed: true };
+  } catch (error) {
     return {
-      hasChanges: false,
-      path: worktree.path,
-      worktreeError: `Git operation failed; work preserved at ${worktree.path} — ${reason}`,
+      ...status,
+      removed: false,
+      worktreeError: `Cleanup refused; no work removed: ${reason(error)}`,
     };
   }
 }
 
-async function removeWorktree(cwd: string, worktreePath: string): Promise<void> {
-  try {
-    await execFileAsync("git", ["worktree", "remove", "--force", worktreePath], {
-      cwd,
-      timeout: 10000,
-    });
-  } catch {
-    try {
-      await execFileAsync("git", ["worktree", "prune"], {
-        cwd,
-        timeout: 5000,
-      });
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-export async function pruneWorktrees(cwd: string): Promise<void> {
-  try {
-    await execFileAsync("git", ["worktree", "prune"], {
-      cwd,
-      timeout: 5000,
-    });
-  } catch {
-    /* ignore */
-  }
+export function formatWorktreeStatus(status: WorktreeStatus): string {
+  return [
+    `Worktree: ${status.path} (${status.exists ? "retained" : "missing"})`,
+    `Worktree ID: ${status.id}`,
+    `Base: ${status.baseCommit}`,
+    `Head: ${status.headCommit ?? "unknown"} (${status.branch ?? (status.headCommit ? "detached" : "unknown")})`,
+    `Changes: ${status.hasUncommittedChanges === undefined ? "unknown" : status.hasUncommittedChanges ? "uncommitted" : "clean"}; commits beyond base: ${status.hasCommits === undefined ? "unknown" : status.hasCommits ? "yes" : "no"}`,
+    status.worktreeError,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

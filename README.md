@@ -8,13 +8,14 @@ The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.fo
 
 ## What it does
 
-Provides three tools and a `/agents` management command:
+Provides delegation tools and a `/agents` management command:
 
 | Tool | Description |
 |------|-------------|
 | `Agent` | Spawn a sub-agent for a complex multi-step task (foreground or background) |
 | `get_subagent_result` | Check status and retrieve output from a background agent |
 | `steer_subagent` | Send a mid-run steering message to a running agent |
+| `cleanup_subagent_worktree` | Explicitly remove an owned worktree after inspection and integration |
 
 ## Built-in agent types
 
@@ -50,7 +51,7 @@ Agent(
 
 Set `cwd` to the git repository the agent should work in whenever the parent session was started from a workspace or another folder. Relative paths resolve from the parent session cwd.
 
-Use `isolation: "worktree"` whenever that `cwd` is a git repository with at least one commit. It creates a temporary worktree from committed `HEAD`. Omit isolation only when that is not possible (not a git repo, no commits) or the agent must see uncommitted/untracked files in the live working tree. Invalid isolation requests fail.
+Use `isolation: "worktree"` whenever that `cwd` is a git repository with at least one commit. It creates a retained detached worktree from committed `HEAD`, or from an existing ref passed as `worktree_base`. Omit isolation only when that is not possible (not a git repo, no commits) or the agent must see uncommitted/untracked files in the live working tree. Invalid isolation requests fail. Worktrees and child commits survive completion, errors, cancellation and parent exit. See [retained worktrees](docs/worktrees.md) for result fields, manual inspection/integration and explicit cleanup.
 
 Run `/agents` in the pi TUI to browse agent types, manage running agents, and adjust settings (concurrency, max turns, join mode).
 
