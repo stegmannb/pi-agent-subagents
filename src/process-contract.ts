@@ -10,6 +10,8 @@ import type {
 } from "./process-profile.ts";
 import type { ReadyProtectionSnapshot, ProtectionId } from "./protection-adapter.ts";
 import type { ProcessRpcOptions } from "./process-rpc.ts";
+import type { GroupBinding } from "./delegation-group.ts";
+import type { LocalMessageClient } from "./messaging-client.ts";
 
 export const PROCESS_RUNNER_EVENT = "pasa:process-runner:v1";
 export const CHILD_POLICY_EVENT = "pasa:child-policy:v1";
@@ -37,9 +39,16 @@ export interface ProcessExecution {
 }
 export interface ProcessExecutionResult {
   responseText: string;
+  /** A received result may still have ingested=false and PARENT_SESSION_WRITE_FAILED.
+   * Only delivery?.ingested === true proves persistent parent-session ingestion.
+   */
+  delivery?: import("./process-results.ts").ResultDelivery;
   resume: (prompt: string, signal?: AbortSignal) => Promise<ProcessExecutionResult>;
 }
 export interface ProcessRunner {
+  /** Collect the child result. Fulfillment (also on resume) does not imply successful ingestion.
+   * Consumers must inspect delivery and preserve/report pending results after a save failure.
+   */
   execute(input: ProcessExecution): Promise<ProcessExecutionResult>;
 }
 export interface ProcessHostPolicy {
@@ -56,7 +65,14 @@ export interface ProcessHostPolicy {
   extensions: Array<{ path: string; protectionId: ProtectionId | null }>;
   environmentAllowlist: string[];
   credentials: CredentialReferences;
-  limits: ProcessLimits;
+  limits: Pick<ProcessLimits, "maxTurns" | "timeoutSeconds"> &
+    Partial<Pick<ProcessLimits, "maxConcurrent" | "maxDepth">>;
+}
+export interface NestedProcessHost {
+  client: LocalMessageClient;
+  binding: GroupBinding;
+  profile: ProcessStartProfile;
+  settingsSourceCwd: string;
 }
 export interface ProcessParent {
   session: AgentSession;
@@ -69,9 +85,12 @@ export interface ProcessBootstrap {
   profile: ProcessStartProfile;
   credentials: CredentialReferences;
   parentCwd: string;
-  roleInstructions?: string;
   protections: ReadyProtectionSnapshot[];
   broker: ParticipantCredential;
+  groupBinding?: GroupBinding;
+  hostPolicy?: ProcessHostPolicy;
+  settingsSourceCwd?: string;
+  taskGoal?: string;
 }
 export interface ChildInspection {
   pid: number;

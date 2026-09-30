@@ -59,6 +59,44 @@ async function parentState(cwd: string) {
 async function missing(path: string) {
   await assert.rejects(lstat(path), { code: "ENOENT" });
 }
+test("integration binds every original snapshot field before using mutable registration", async (t) => {
+  const cwd = await fixture(t);
+  await writeFile(join(cwd, "selected.txt"), "selected parent bytes\n");
+  const child = await createSnapshotWorktree(cwd, "registration-binding", {
+    excludePaths: ["custom-private"],
+    untrackedPaths: ["selected.txt"],
+  });
+  await mkdir(join(child.path, "custom-private"));
+  await writeFile(join(child.path, "custom-private/new.txt"), "must remain in child\n");
+  await commit(child.path);
+  const before = await parentState(cwd);
+  const file = join(child.id, "pi-subagents.json");
+  const saved = JSON.parse(await readFile(file, "utf8"));
+  const original = structuredClone(child);
+  const baseline = await integrateSnapshotWorktree(cwd, child);
+  assert.match(JSON.stringify(baseline.conflicts), /Excluded secret or ignored resource/);
+  const variants = [
+    { ...saved, snapshot: { ...saved.snapshot, excludePaths: [] } },
+    { ...saved, snapshot: { ...saved.snapshot, untrackedPaths: [] } },
+    { ...saved, snapshot: { ...saved.snapshot, parentPath: child.path } },
+    {
+      ...saved,
+      snapshot: { ...saved.snapshot, parentHead: await git(child.path, "rev-parse", "HEAD") },
+    },
+    { ...saved, snapshot: { ...saved.snapshot, ref: "refs/pi-subagents/changed" } },
+    { ...saved, baseCommit: await git(child.path, "rev-parse", "HEAD") },
+  ];
+  for (const altered of variants) {
+    await writeFile(file, JSON.stringify(altered));
+    const refusal = await integrateSnapshotWorktree(cwd, child);
+    assert.equal(refusal.integrated, false);
+    assert.match(JSON.stringify(refusal.conflicts), /registration mismatch/);
+    assert.deepEqual(await parentState(cwd), before);
+    assert.equal(await readFile(join(cwd, "selected.txt"), "utf8"), "selected parent bytes\n");
+    await missing(join(cwd, "custom-private/new.txt"));
+    assert.deepEqual(child, original);
+  }
+});
 
 test("snapshot captures staged and unstaged raw bytes, with byte-identical parent HEAD/index/status", async (t) => {
   const cwd = await fixture(t);

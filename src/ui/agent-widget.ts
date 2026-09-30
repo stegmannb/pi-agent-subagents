@@ -54,6 +54,7 @@ export interface AgentActivity {
 }
 
 export interface AgentDetails {
+  resultDelivery?: import("../process-results.ts").ResultDelivery;
   process?: import("../process-contract.ts").ProcessObservation;
   worktree?: import("../worktree.ts").WorktreeStatus;
   displayName: string;
@@ -322,7 +323,12 @@ export class AgentWidget {
       const isWaiting = (a as any).status === "waiting";
       const icon = isWaiting ? theme.fg("warning", "⏸") : theme.fg("accent", frame);
       const activity = isWaiting
-        ? theme.fg("warning", `waiting for parent: ${(a as any).helpMessage ?? "help requested"}`)
+        ? theme.fg(
+            "warning",
+            a.resultDelivery && !a.resultDelivery.ingested
+              ? "result delivery pending: parent session write failed"
+              : `waiting for parent: ${a.helpMessage ?? "help requested"}`,
+          )
         : bg
           ? describeActivity(bg.activeTools, bg.responseText)
           : "thinking…";

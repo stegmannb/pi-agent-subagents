@@ -66,6 +66,10 @@ export class LocalMessageClient {
   private readonly ready = deferred<void>();
   private readonly deliveries = new Map<string, Outgoing>();
   private readonly requests = new Map<string, RequestWait>();
+  private readonly controls = new Map<
+    string,
+    { result: Deferred<unknown>; timer: NodeJS.Timeout }
+  >();
   private readonly inbox: Envelope[] = [];
   private inboxBytes = 0;
   private readonly waiters: InboxWait[] = [];
@@ -103,6 +107,19 @@ export class LocalMessageClient {
     if (!isRecord(frame) || frame.version !== 1) throw new TransportError("PROTOCOL_ERROR");
     if (frame.type === "shutdown") {
       this.fail("BROKER_CLOSED");
+      return;
+    }
+    if (frame.type === "control-result") {
+      if (!isId(frame.id)) throw new TransportError("PROTOCOL_ERROR");
+      const pending = this.controls.get(frame.id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.controls.delete(frame.id);
+      if (frame.code !== undefined) {
+        if (!ERROR_CODES.includes(frame.code as ErrorCode))
+          throw new TransportError("PROTOCOL_ERROR");
+        pending.result.reject(new TransportError(frame.code as ErrorCode));
+      } else pending.result.resolve(frame.value);
       return;
     }
     if (frame.type === "error") {
@@ -232,6 +249,29 @@ export class LocalMessageClient {
   event(to: string, payload: Json): DeliveryHandle {
     return this.send(this.envelope("event", to, payload));
   }
+  /** Private host control. Sender identity comes from this authenticated connection. */
+  control<T>(
+    operation: "members" | "reserve" | "resume" | "release",
+    input: unknown = null,
+  ): Promise<T> {
+    this.assertOpen();
+    if (this.controls.size >= this.limits.maxPending) throw new TransportError("CAPACITY");
+    const id = randomUUID();
+    const result = deferred<unknown>();
+    const timer = setTimeout(() => {
+      this.controls.delete(id);
+      result.reject(new TransportError("TIMEOUT"));
+    }, this.limits.requestTimeoutMs);
+    this.controls.set(id, { result, timer });
+    try {
+      this.wire.send({ version: 1, type: "control", id, operation, input });
+    } catch (error) {
+      clearTimeout(timer);
+      this.controls.delete(id);
+      result.reject(error instanceof TransportError ? error : new TransportError("PROTOCOL_ERROR"));
+    }
+    return result.promise as Promise<T>;
+  }
   request(
     to: string,
     payload: Json,
@@ -328,6 +368,11 @@ export class LocalMessageClient {
     this.ended = new TransportError(code);
     clearTimeout(this.handshakeTimer);
     this.ready.reject(this.ended);
+    for (const control of this.controls.values()) {
+      clearTimeout(control.timer);
+      control.result.reject(this.ended);
+    }
+    this.controls.clear();
     for (const id of this.deliveries.keys()) this.rejectMessage(id, this.ended);
     for (const id of this.requests.keys()) this.rejectMessage(id, this.ended);
     for (const waiter of this.waiters) {

@@ -36,9 +36,10 @@
     "ci:lint": "pnpm run lint",
     "ci:check": "pnpm run check",
     "test:snapshots": "node --test src/worktree-snapshot.test.ts",
+    "test:delegation": "node --test tests/process/workspace-tools-real.test.ts tests/process/delegation-real.test.ts tests/process/delegation-address-real.test.ts tests/process/delegation-help-real.test.ts tests/process/delegation-results-real.test.ts tests/process/result-persistence-real.test.ts tests/process/group-processes-real.test.ts",
     "test:process": "node --test src/process-rpc.test.ts src/protection-adapter.test.ts tests/process/rpc-real.test.ts tests/process/host-real.test.ts tests/process/boundary-real.test.ts",
     "test:process:tui": "node --test --test-concurrency=1 tests/process/host-tui.test.ts",
-    "test:process:protections": "node tests/process/protection-sources.ts && node --test --test-concurrency=1 tests/process/protections-real.test.ts tests/process/protections-tui-real.test.ts tests/process/protections-role-real.test.ts"
+    "test:process:protections": "node tests/process/protection-sources.ts && node --test --test-concurrency=1 tests/process/protections-real.test.ts tests/process/protections-role-real.test.ts tests/process/protections-tui-real.test.ts tests/process/protections-delegation-real.test.ts tests/process/protections-delegation-roles-real.test.ts tests/process/delegation-real.test.ts tests/process/delegation-address-real.test.ts tests/process/delegation-help-real.test.ts tests/process/delegation-results-real.test.ts tests/process/group-processes-real.test.ts tests/process/result-persistence-real.test.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": ">=0.70.5",

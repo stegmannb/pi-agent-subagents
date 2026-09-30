@@ -1,6 +1,6 @@
 # Retained worktrees
 
-`Agent` accepts `isolation: "worktree"` with an optional `worktree_base` naming an existing branch, tag or commit. The default is `HEAD` in `cwd`. Git resolves that value to a commit before creating a detached worktree. Moving the source branch afterward does not change the child's base. Uncommitted parent files are not copied. `worktree_base` is rejected without worktree isolation or on resume.
+`Agent` accepts `isolation: "worktree"` with an optional `worktree_base` naming an existing branch, tag or commit. The default is `HEAD` in `cwd`. Git resolves that value to a commit before creating a detached worktree. Moving the source branch afterward does not change the child's base. These modes do not copy uncommitted parent files. Use explicit `worktree_snapshot` for working changes. Both selections are rejected without worktree isolation or on resume, and cannot be combined.
 
 Worktrees live under `<git-common-dir>/pi-agent-worktrees/<uuid>`, outside the parent's working files and system temporary directories. The returned identity is the actual per-worktree Git administrative directory. Its `pi-subagents.json` registration stores the path, immutable `baseCommit`, agent ID and common repository directory. A detached worktree has no branch field. If the child creates a branch, inspection reports its real name.
 
@@ -39,6 +39,26 @@ Automatic integration, force deletion and recovery of running sessions are outsi
 
 ## Working-content snapshots
 
+The `Agent` tool supports the same snapshot selection in foreground and background, with either runner:
+
+```text
+Agent(
+  description: "Review current refactor",
+  subagent_type: "code-review",
+  runner: "rpc",
+  prompt: "Review the current refactor. Return target/base, findings, evidence and blockers.",
+  isolation: "worktree",
+  worktree_snapshot: {
+    untracked_paths: ["src/new-helper.ts"],
+    exclude_paths: ["local-credentials"]
+  }
+)
+```
+
+An empty `worktree_snapshot: {}` copies tracked working changes and selects no
+untracked files. Omitting it keeps the default committed-HEAD behavior. Resume
+uses the existing workspace; it does not take another snapshot.
+
 The additive TypeScript API in `src/worktree.ts` creates a retained child from the parent's current working files:
 
 ```ts
@@ -53,7 +73,7 @@ const report = await integrateSnapshotWorktree("/path/to/parent", child);
 if (!report.integrated) console.error(report.conflicts, report.recoveryPaths);
 ```
 
-The existing `createWorktree(cwd, agentId, base?)` API and lifecycle retain their behavior. These functions are an explicit host API; lifecycle and result retrieval do not invoke them. A caller that exposes them as tools must stop child writers and require a deliberate integration call.
+The existing `createWorktree(cwd, agentId, base?)` API and lifecycle retain their behavior. Lifecycle and result retrieval never integrate changes. The integration tool below requires a separate deliberate call.
 
 Snapshot mode captures current bytes of tracked files, including staged additions, staged and unstaged modifications, deletions, executable bits and symlink target strings. A file present in HEAD or the index counts as tracked. If a staged deletion has been recreated on disk, its current bytes are included. Staging boundaries are not copied into the child. Untracked files require exact repository-relative file paths in `untrackedPaths`; directories, globs, traversal, non-UTF-8 filenames and Git administrative paths are not accepted. Unselected new files remain solely in the parent.
 
@@ -67,7 +87,24 @@ Capture checks parent HEAD, branch, byte-identical index and porcelain status ar
 
 ## Explicit snapshot integration
 
+After reviewing and committing the child's changes and stopping all writers, call:
+
+```text
+integrate_subagent_worktree(agent_id: "the-id-returned-by-Agent")
+```
+
+This tool accepts only a worktree owned by an agent record in the current
+session and uses its recorded original parent checkout. It refuses an active
+agent, an unknown agent or a worktree created without a working-changes
+snapshot. Expired records require the explicit host API or manual recovery.
+The returned structured details contain `integrated`, `childHead`,
+`changedPaths`, `conflicts` and optional `recoveryPaths`. Integration applies
+bytes only. It does not grant review approval, satisfy a merge gate or delete
+the worktree.
+
 Integration requires the registered original parent checkout and a clean, committed child HEAD descending from its snapshot base. Ignored child outputs are not integrated. Uncommitted or untracked child files cause a refusal so the integrated revision is explicit. The report includes the captured `childHead`, `changedPaths` and per-path `conflicts`.
+
+Integration binds the on-disk registration to the original `WorktreeInfo` retained by the caller. The worktree identity and path, snapshot base, original parent path and HEAD, retention ref, exclusions and selected untracked paths must all match. A changed registration causes a refusal before parent mutation, including when it removes an exclusion. Integration uses the retained selection and checks the registration again immediately before applying files. API callers must retain the original record; reloading an altered registration cannot establish the original selection.
 
 Only paths changed between the immutable snapshot and that child commit are considered. For each path, the current parent must equal either the snapshot or the desired child bytes and mode. Matching child contents make repeated integration harmless. Unrelated parent edits and staging remain intact. A different parent version produces a conflict even if a textual merge might be possible; V1 performs no automatic line merge. Directory/file shape conflicts also require manual resolution.
 
@@ -78,3 +115,11 @@ Stop all external writers for capture and integration. A repository-scoped exclu
 Cleanup remains separate and keeps its ancestry requirement. Applying child bytes alone does not prove that child commits are ancestors of the parent's HEAD. Snapshot refs remain retained even after explicit worktree removal; deleting them is a separate deliberate Git operation after reviewing retention needs.
 
 Run the real temporary Git fixtures with `pnpm run test:snapshots` or `devenv tasks run test:snapshots`. They also run as part of `pnpm test` and the existing `test:unit` devenv task.
+
+`pnpm run test:delegation` or `devenv tasks run test:delegation` exercises the
+registered Agent and integration tools through a real companion SDK host and
+separate RPC child processes with a deterministic provider. It checks HEAD and
+named bases, explicit new-file selection, persistent resume, dirty-child and
+conflict refusals, and parent index/branch preservation. This focused fixture
+does not load protection adapters; the actual OS protection suite remains a
+separate qualification requirement.

@@ -16,6 +16,7 @@ import {
 /** Pi 0.73.0 JSONL transport. This is not a protection capture/launch adapter. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { ResultDeliveryTimeoutError } from "./process-results.ts";
 import { readChildFailureExitStatus, type ChildFailurePhase } from "./process-child-failure.ts";
 import type {
   AgentSessionEvent,
@@ -93,6 +94,8 @@ interface Run {
   assistant?: Record<string, unknown>;
   turns: number;
   maxTurns: number;
+  managed: boolean;
+  delivered: boolean;
 }
 
 export class ProcessRpc {
@@ -340,9 +343,19 @@ export class ProcessRpc {
     if (frame.type === "agent_start" && (!this.ready || !run?.submitted))
       throw new ProcessRpcError("UNAUTHORIZED_AGENT_START");
     if (!run) return;
+    if (
+      (frame.type === "agent_start" || frame.type === "turn_start") &&
+      run.turns >= run.maxTurns
+    ) {
+      this.emit({ type: "process_limit", limit: "turns" });
+      this.fail("TURN_LIMIT");
+      return;
+    }
     if (frame.type === "agent_start") {
-      if (run.started) throw new ProcessRpcError("UNEXPECTED_AGENT_START");
+      if (run.started && !(run.managed && run.ended && !run.delivered))
+        throw new ProcessRpcError("UNEXPECTED_AGENT_START");
       run.started = true;
+      run.ended = false;
     }
     if (
       frame.type === "message_end" &&
@@ -377,6 +390,7 @@ export class ProcessRpc {
       );
       return;
     }
+    if (run.managed && !run.delivered) return;
     if (!Array.isArray(message.content)) throw new ProcessRpcError("PROTOCOL_ERROR");
     const text = message.content
       .filter((part) => object(part) && part.type === "text" && typeof part.text === "string")
@@ -478,7 +492,12 @@ export class ProcessRpc {
 
   async prompt(
     message: string,
-    limits: { maxTurns: number; timeoutMs: number; signal?: AbortSignal },
+    limits: {
+      maxTurns: number;
+      timeoutMs: number;
+      signal?: AbortSignal;
+      completion?: Promise<unknown>;
+    },
   ): Promise<string> {
     if (!this.ready || this.failure) throw this.failure ?? new ProcessRpcError("NOT_READY");
     if (this.run) throw new ProcessRpcError("BUSY");
@@ -493,14 +512,33 @@ export class ProcessRpc {
       acknowledged: false,
       turns: 0,
       maxTurns: limits.maxTurns,
+      managed: limits.completion !== undefined,
+      delivered: false,
     };
     this.run = run;
-    const abort = () => this.fail("ABORTED");
-    limits.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => {
+    const timeLimit = () => {
+      if (this.run !== run || this.failure) return;
       this.emit({ type: "process_limit", limit: "time" });
       this.fail("TIME_LIMIT");
-    }, limits.timeoutMs);
+    };
+    if (limits.completion)
+      void limits.completion.then(
+        () => {
+          if (this.run !== run) return;
+          run.delivered = true;
+          this.complete();
+        },
+        (error) => {
+          if (this.run !== run) return;
+          // The collector starts the same run budget just before prompt().
+          // Whichever timer expires first must retain the time-limit outcome.
+          if (error instanceof ResultDeliveryTimeoutError) timeLimit();
+          else this.fail("RESULT_DELIVERY_FAILED");
+        },
+      );
+    const abort = () => this.fail("ABORTED");
+    limits.signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(timeLimit, limits.timeoutMs);
     try {
       await Promise.race([
         this.options.verifyReady(await this.getState(), this.pid, await this.inspect("preprompt")),
@@ -525,6 +563,12 @@ export class ProcessRpc {
     }
   }
 
+  /** Host reply bypasses a blocked foreground model through Pi's registered command path. */
+  async replyHelp(requestId: string, message: string): Promise<void> {
+    if (!/^[a-zA-Z0-9_-]+$/.test(requestId) || !message.trim())
+      throw new ProcessRpcError("INVALID_REPLY");
+    await this.request({ type: "prompt", message: `/agent-reply ${requestId} ${message}` });
+  }
   async close(): Promise<void> {
     this.fail("CLOSED");
     await this.closed.promise;

@@ -16,31 +16,7 @@
       ];
 
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-    in
-    {
-      lib.mkProtectionVM = import ./nix/protection-vm.nix {
-        pkgs = nixpkgs.legacyPackages.x86_64-linux;
-        inherit (nixpkgs) lib;
-      };
-
-      checks.x86_64-linux.protection-vm-smoke =
-        let
-          pkgs = nixpkgs.legacyPackages.x86_64-linux;
-          mkProtectionVM = import ./nix/protection-vm.nix {
-            inherit pkgs;
-            inherit (nixpkgs) lib;
-          };
-        in
-        mkProtectionVM {
-          name = "protection-vm-smoke";
-          preparedBundle = ./tests/vm;
-          command = [
-            "node"
-            "smoke.mjs"
-          ];
-        };
-
-      checks.x86_64-linux.process-protections =
+      processProtectionChecks =
         let
           pkgs = nixpkgs.legacyPackages.x86_64-linux;
         in
@@ -50,6 +26,38 @@
             inherit pkgs;
             inherit (nixpkgs) lib;
           };
+        };
+
+    in
+    {
+      lib.mkProtectionVM = import ./nix/protection-vm.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        inherit (nixpkgs) lib;
+      };
+
+      checks.x86_64-linux =
+        (nixpkgs.lib.mapAttrs' (
+          name: value: nixpkgs.lib.nameValuePair "process-protections-${name}" value
+        ) processProtectionChecks.suites)
+        // {
+          protection-vm-smoke =
+            let
+              pkgs = nixpkgs.legacyPackages.x86_64-linux;
+              mkProtectionVM = import ./nix/protection-vm.nix {
+                inherit pkgs;
+                inherit (nixpkgs) lib;
+              };
+            in
+            mkProtectionVM {
+              name = "protection-vm-smoke";
+              preparedBundle = ./tests/vm;
+              command = [
+                "node"
+                "smoke.mjs"
+              ];
+            };
+
+          process-protections = processProtectionChecks.aggregate;
         };
 
       packages = forAllSystems (

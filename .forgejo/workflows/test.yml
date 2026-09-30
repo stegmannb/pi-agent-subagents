@@ -33,6 +33,7 @@ jobs:
             pnpm test
             pnpm run test:tui
             pnpm run test:process
+            pnpm run test:delegation
             pnpm run test:process:tui
           '
       - name: Upload TUI failure artifacts

@@ -12,26 +12,56 @@ env:
     keep-build-log = false
 
 jobs:
-  process-protections:
+  process-protections-suite:
+    name: process-protections-${{ matrix.suite }}
     runs-on: [k8s-executor-medium, amd64]
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        suite:
+          - baseline-rpc
+          - baseline-ui
+          - nested-review
+          - nested-roles
+          - communication-joins
+          - communication-address
+          - communication-help
+          - communication-results
     steps:
       - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Require actual Guard and OS Sandbox tests in the offline Linux VM
+      - name: Run required protection suite
         shell: bash
+        env:
+          PROTECTION_SUITE: ${{ matrix.suite }}
         run: |
           set -euo pipefail
-          mkdir -p test-results/process-protections
+          mkdir -p "test-results/process-protections-$PROTECTION_SUITE"
           nix build --no-update-lock-file --print-build-logs \
-            --out-link result .#checks.x86_64-linux.process-protections \
-            2>&1 | tee test-results/process-protections/build.log
-          cp -R result/. test-results/process-protections/
-      - name: Upload actual protection VM logs
+            --out-link result ".#checks.x86_64-linux.process-protections-$PROTECTION_SUITE" \
+            2>&1 | tee "test-results/process-protections-$PROTECTION_SUITE/build.log"
+          cp -R result/. "test-results/process-protections-$PROTECTION_SUITE/"
+      - name: Upload suite logs
         if: always()
         uses: https://data.forgejo.org/actions/upload-artifact@c24449f33cd45d4826c6702db7e49f7cdb9b551d # v3-node20
         with:
-          name: process-protections-logs
-          path: test-results/process-protections/
+          name: process-protections-${{ matrix.suite }}-logs
+          path: test-results/process-protections-${{ matrix.suite }}/
           if-no-files-found: error
+
+  process-protections:
+    needs: [process-protections-suite]
+    if: always()
+    runs-on: [k8s-executor-medium, amd64]
+    timeout-minutes: 45
+    steps:
+      - name: Require every protection suite to succeed
+        shell: bash
+        env:
+          SUITE_RESULT: ${{ needs.process-protections-suite.result }}
+        run: |
+          set -euo pipefail
+          test "$SUITE_RESULT" = success

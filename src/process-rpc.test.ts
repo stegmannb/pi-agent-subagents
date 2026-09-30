@@ -122,6 +122,32 @@ for (const status of [97, 128, 161, 1, 127]) {
     assert.throws(() => process.kill(client.pid, 0), { code: "ESRCH" });
   });
 }
+for (const mode of ["managed-wake", "managed-followup"]) {
+  for (const maxTurns of [1, 2]) {
+    test(`RPC retains cumulative turn limit across ${mode}: ${maxTurns}`, async () => {
+      let complete!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      let turns = 0;
+      const client = await ProcessRpc.start(
+        options(mode, {
+          onEvent: (event) => {
+            if (event.type === "turn_end") turns++;
+            if (event.type === "agent_end" && turns === 2) complete();
+          },
+        }),
+      );
+      try {
+        const result = client.prompt("test", { maxTurns, timeoutMs: 1000, completion });
+        if (maxTurns === 1) await assert.rejects(result, { code: "TURN_LIMIT" });
+        else assert.equal(await result, "continued");
+      } finally {
+        await client.close();
+      }
+    });
+  }
+}
 for (const [mode, code] of [
   ["early-exit", "PROCESS_EXITED"],
   ["bad-json", "PROTOCOL_ERROR"],

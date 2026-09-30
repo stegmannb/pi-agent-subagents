@@ -63,6 +63,8 @@ export type LifetimeUsage = {
 };
 
 export interface AgentRecord {
+  resultDelivery?: import("./process-results.ts").ResultDelivery;
+  completionPending?: boolean;
   process?: import("./process-contract.ts").ProcessObservation;
   id: string;
   type: SubagentType;

@@ -99,6 +99,7 @@ export interface ProcessStartProfile {
   model: ProcessModel & { source: "inherited" | "override" };
   thinking: ProcessThinking;
   role: ProcessRole;
+  rolePrompt?: FileReference;
   tools: string[];
   limits: ProcessLimits;
   resources: ResourceReference[];
@@ -280,6 +281,7 @@ export function captureProfileResources(
     cwd: string;
     agentDir: string;
     configurationFiles?: string[];
+    settingsSourceCwd?: string;
     providerFiles?: string[];
     systemPromptFile?: string;
     appendSystemPromptFiles?: string[];
@@ -302,7 +304,10 @@ export function captureProfileResources(
   for (const entry of extensions.extensions) add("extension", entry.resolvedPath);
   const cwd = directory(sources.cwd);
   const agentDir = directory(sources.agentDir);
-  for (const path of [join(agentDir, "settings.json"), join(cwd, ".pi/settings.json")]) {
+  for (const path of [
+    join(agentDir, "settings.json"),
+    join(sources.settingsSourceCwd ?? cwd, ".pi/settings.json"),
+  ]) {
     if (existsSync(path)) add("configuration", path);
   }
   const defaultPrompt = (name: string) =>

@@ -1,4 +1,6 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { DelegationGroup, type GroupBinding } from "./delegation-group.ts";
+import type { ProcessRole } from "./process-profile.ts";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
@@ -52,6 +54,8 @@ export class LocalMessageBroker {
   private readonly participants = new Map<string, Registration>();
   private readonly connections = new Set<Connection>();
   private readonly deliveries = new Map<string, Delivery>();
+  private readonly groups = new Map<string, DelegationGroup>();
+  private readonly memberCredentials = new Map<string, ParticipantCredential>();
   private closed = false;
   private closing?: Promise<void>;
   private constructor(directory: string, limits: TransportLimits) {
@@ -99,6 +103,90 @@ export class LocalMessageBroker {
     this.credentials.set(capability, registration);
     this.participants.set(identity.agentId, registration);
     return { socketPath: this.socketPath, capability };
+  }
+  registerRoot(
+    sessionId: string,
+    role: ProcessRole,
+    limits: { maxConcurrent: number; maxDepth: number },
+  ): {
+    binding: GroupBinding;
+    credential: ParticipantCredential;
+  } {
+    const binding: GroupBinding = {
+      groupId: randomUUID(),
+      agentId: randomUUID(),
+      sessionId,
+      parentId: null,
+      processId: randomUUID(),
+      taskId: "root",
+      depth: 0,
+      role,
+      ...limits,
+      active: true,
+    };
+    const group = new DelegationGroup(binding);
+    const credential = this.register(binding);
+    this.groups.set(binding.groupId, group);
+    this.memberCredentials.set(binding.agentId, credential);
+    return { binding, credential };
+  }
+  private control(connection: Connection, frame: Record<string, unknown>): void {
+    if (!isId(frame.id)) throw new TransportError("PROTOCOL_ERROR");
+    const participant = connection.registration!.participant;
+    const group = this.groups.get(participant.groupId);
+    try {
+      if (!group) throw new TransportError("FORBIDDEN");
+      let value: unknown;
+      const input = frame.input;
+      if (frame.operation === "members") value = [...group.members.values()];
+      else if (frame.operation === "reserve") {
+        if (this.participants.size >= this.limits.maxParticipants)
+          throw new TransportError("CAPACITY");
+        const binding = group.reserve(participant.agentId, input);
+        try {
+          const credential = this.register(binding);
+          this.memberCredentials.set(binding.agentId, credential);
+          value = { binding, credential };
+        } catch (error) {
+          group.release(participant.agentId, binding.agentId, binding.processId);
+          throw error;
+        }
+      } else if (frame.operation === "resume" && isRecord(input) && isId(input.agentId)) {
+        const previousRegistration = this.participants.get(input.agentId);
+        const binding = group.resume(
+          participant.agentId,
+          input.agentId,
+          previousRegistration?.connection !== undefined,
+        );
+        const previous = this.memberCredentials.get(binding.agentId)!;
+        this.credentials.delete(previous.capability);
+        const credential = {
+          socketPath: this.socketPath,
+          capability: randomBytes(32).toString("hex"),
+        };
+        const registration = { participant: previousRegistration!.participant };
+        this.credentials.set(credential.capability, registration);
+        this.participants.set(binding.agentId, registration);
+        this.memberCredentials.set(binding.agentId, credential);
+        value = { binding, credential };
+      } else if (
+        frame.operation === "release" &&
+        isRecord(input) &&
+        isId(input.agentId) &&
+        isId(input.processId)
+      ) {
+        group.release(participant.agentId, input.agentId, input.processId);
+        value = null;
+      } else throw new TransportError("PROTOCOL_ERROR");
+      this.send(connection, { version: 1, type: "control-result", id: frame.id, value });
+    } catch (error) {
+      this.send(connection, {
+        version: 1,
+        type: "control-result",
+        id: frame.id,
+        code: error instanceof TransportError ? error.code : "PROTOCOL_ERROR",
+      });
+    }
   }
   private connect(socket: Socket): void {
     // Reject before allocating framing/authentication state.
@@ -157,6 +245,10 @@ export class LocalMessageBroker {
         participant: registration.participant,
         limits: this.limits,
       });
+      return;
+    }
+    if (frame.type === "control") {
+      this.control(connection, frame);
       return;
     }
     if (frame.type === "received") {

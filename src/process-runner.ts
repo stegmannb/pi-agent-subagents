@@ -2,8 +2,13 @@ import { validateQualificationPreset } from "./process-qualification.ts";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import { join } from "node:path";
 /** SDK-host process runner. Captures the actual live parent before each incarnation. */
-import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { childSettings } from "./process-settings.ts";
+import { SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
+import type { GroupBinding } from "./delegation-group.ts";
+import type { ParticipantCredential } from "./messaging-broker.ts";
+import { ProcessCommunication, COMMUNICATION_EVENT } from "./process-communication.ts";
 import { fileURLToPath } from "node:url";
 import { LocalMessageBroker } from "./messaging-broker.ts";
 import { LocalMessageClient } from "./messaging-client.ts";
@@ -37,6 +42,7 @@ import {
   type ProcessExecution,
   type ProcessExecutionResult,
   type ChildInspection,
+  type NestedProcessHost,
 } from "./process-contract.ts";
 
 export function requireProcessRunner(bus: ProcessParent["eventBus"]): ProcessRunner {
@@ -53,6 +59,7 @@ export function requireProcessRunner(bus: ProcessParent["eventBus"]): ProcessRun
 export async function attachProcessRunner(
   getParent: () => ProcessParent,
   policy: ProcessHostPolicy,
+  nested?: NestedProcessHost,
 ): Promise<() => Promise<void>> {
   const qualificationPreset = validateQualificationPreset(policy.qualificationPreset);
   const childStartupTimeoutMs = policy.childStartupTimeoutMs ?? 10_000;
@@ -63,6 +70,14 @@ export async function attachProcessRunner(
     policy.childStartupTimeoutMs === null
   )
     throw new ProcessProfileError("INVALID_CHILD_STARTUP_TIMEOUT");
+  const limits = {
+    ...policy.limits,
+    maxConcurrent: policy.limits.maxConcurrent === undefined ? 4 : policy.limits.maxConcurrent,
+    maxDepth: policy.limits.maxDepth === undefined ? 2 : policy.limits.maxDepth,
+  };
+  for (const value of [limits.maxConcurrent, limits.maxDepth])
+    if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
+      throw new ProcessProfileError("INVALID_GROUP_LIMIT");
   const classifications = policy.extensions.map((e) => ({
     path: realpathSync(e.path),
     protectionId: e.protectionId,
@@ -70,32 +85,64 @@ export async function attachProcessRunner(
   mkdirSync(policy.sessionDirectory, { recursive: true, mode: 0o700 });
 
   const initialParent = getParent();
-  const initialResources = captureProfileResources(initialParent.session.resourceLoader, {
+  const settingsSourceCwd = nested?.settingsSourceCwd ?? initialParent.cwd;
+  const captureSources = {
     cwd: initialParent.cwd,
     agentDir: initialParent.agentDir,
     configurationFiles: policy.nodeImports,
+    ...(nested
+      ? {
+          settingsSourceCwd,
+          appendSystemPromptFiles: nested.profile.resources
+            .filter((r) => r.kind === "append-prompt")
+            .map((r) => r.path),
+          systemPromptFile: nested.profile.resources.find((r) => r.kind === "system-prompt")?.path,
+        }
+      : {}),
+  };
+  const initialResources = captureProfileResources(initialParent.session.resourceLoader, {
+    ...captureSources,
   });
 
-  const broker = await LocalMessageBroker.start();
+  const availableContextTools = initialParent.session
+    .getAllTools()
+    .map((t) => t.name)
+    .filter((t) => SUBAGENT_CONTEXT_TOOL_NAMES.includes(t));
+  const broker = nested ? undefined : await LocalMessageBroker.start();
+  const root = broker?.registerRoot(
+    initialParent.session.sessionId,
+    {
+      name: "root",
+      readOnly: false,
+      allowedTools: [
+        ...new Set([...initialParent.session.getActiveToolNames(), ...availableContextTools]),
+      ],
+    },
+    limits,
+  );
+  const binding = nested?.binding ?? root!.binding;
   const parentIdentity = {
-    agentId: randomUUID(),
-    sessionId: getParent().session.sessionId,
-    processId: randomUUID(),
+    agentId: binding.agentId,
+    sessionId: binding.sessionId,
+    processId: binding.processId,
   };
-  const groupId = randomUUID();
-  const parentCredential = broker.register({
-    groupId,
-    agentId: parentIdentity.agentId,
-    sessionId: parentIdentity.sessionId,
-    parentId: null,
-  });
-  const parentClient = await LocalMessageClient.connect(parentCredential).catch(async (error) => {
-    await broker.close();
-    throw error;
+  const parentClient =
+    nested?.client ??
+    (await LocalMessageClient.connect(root!.credential).catch(async (error) => {
+      await broker?.close();
+      throw error;
+    }));
+  const communication = new ProcessCommunication(
+    parentClient,
+    binding,
+    initialParent.session,
+    initialParent.eventBus,
+  );
+  const unbindCommunication = initialParent.eventBus.on(COMMUNICATION_EVENT, (value) => {
+    (value as { bind(channel: ProcessCommunication): void }).bind(communication);
   });
   const running = new Set<ProcessRpc>();
   const busySessions = new Set<string>();
-  let active = 0;
   let disposed = false;
 
   async function capture(cwd: string) {
@@ -104,9 +151,7 @@ export async function attachProcessRunner(
       throw new ProcessProfileError("PARENT_SESSION_CHANGED");
     await parent.session.settingsManager.flush();
     const resources = captureProfileResources(parent.session.resourceLoader, {
-      cwd: parent.cwd,
-      agentDir: parent.agentDir,
-      configurationFiles: policy.nodeImports,
+      ...captureSources,
     });
     const settingsPaths = [
       join(parent.agentDir, "settings.json"),
@@ -116,12 +161,16 @@ export async function attachProcessRunner(
       refs.filter((ref) => !settingsPaths.includes(ref.path));
     if (JSON.stringify(immutable(resources)) !== JSON.stringify(immutable(initialResources)))
       throw new ProcessProfileError("PARENT_RESOURCE_CHANGED");
-    const fromDisk = SettingsManager.create(parent.cwd, parent.agentDir);
+    const fromDisk = SettingsManager.create(settingsSourceCwd, parent.agentDir);
     if (
-      JSON.stringify(fromDisk.getGlobalSettings()) !==
-        JSON.stringify(parent.session.settingsManager.getGlobalSettings()) ||
-      JSON.stringify(fromDisk.getProjectSettings()) !==
-        JSON.stringify(parent.session.settingsManager.getProjectSettings())
+      nested
+        ? JSON.stringify(childSettings(settingsSourceCwd, parent.agentDir, nested.profile)) !==
+            JSON.stringify(parent.session.settingsManager.getGlobalSettings()) ||
+          Object.keys(parent.session.settingsManager.getProjectSettings()).length !== 0
+        : JSON.stringify(fromDisk.getGlobalSettings()) !==
+            JSON.stringify(parent.session.settingsManager.getGlobalSettings()) ||
+          JSON.stringify(fromDisk.getProjectSettings()) !==
+            JSON.stringify(parent.session.settingsManager.getProjectSettings())
     )
       throw new ProcessProfileError("PARENT_SETTINGS_DRIFT");
     const extensionPaths = resources.filter((r) => r.kind === "extension").map((r) => r.path);
@@ -171,6 +220,7 @@ export async function attachProcessRunner(
 
   const runner: ProcessRunner = {
     async execute(input): Promise<ProcessExecutionResult> {
+      if (binding.role.readOnly) throw new ProcessProfileError("ROLE_DELEGATION_FORBIDDEN");
       const cwd = realpathSync(input.cwd);
       const captured = await capture(cwd);
       const { parent, resources, classification, proofs } = captured;
@@ -180,11 +230,13 @@ export async function attachProcessRunner(
           cwd: parent.cwd,
           agentDir: parent.agentDir,
           sessionFile: parent.session.sessionFile ?? "",
-          depth: 0,
+          depth: binding.depth,
           model: { provider: parent.session.model!.provider, id: parent.session.model!.id },
           thinking: parent.session.thinkingLevel,
-          activeTools: parent.session.getActiveToolNames(),
-          limits: policy.limits,
+          activeTools: [
+            ...new Set([...parent.session.getActiveToolNames(), ...availableContextTools]),
+          ].filter((t) => binding.role.allowedTools.includes(t)),
+          limits,
           resources,
           protectionInventory: "complete",
           extensionClassification: classification,
@@ -220,40 +272,67 @@ export async function attachProcessRunner(
         ...(input.thinking ? { thinkingOverride: input.thinking } : {}),
         ...(input.limits ? { limits: input.limits } : {}),
       });
-      verifyProfileFiles(resolved.profile);
-      const credential = broker.register({
-        groupId,
-        agentId: resolved.profile.identity.agentId,
-        sessionId: resolved.profile.identity.sessionId,
-        parentId: parentIdentity.agentId,
+      const grant = await parentClient.control<{
+        binding: GroupBinding;
+        credential: ParticipantCredential;
+      }>("reserve", {
+        taskId: input.taskId,
+        role: resolved.profile.role,
+        maxConcurrent: resolved.profile.limits.maxConcurrent,
+        maxDepth: resolved.profile.limits.maxDepth,
       });
-      reserveProcessSession(resolved.profile);
-      return run(input, resolved.profile, credential, proofs, captured.leases);
+      const profile = resolved.profile;
+      profile.identity = {
+        agentId: grant.binding.agentId,
+        sessionId: grant.binding.sessionId,
+        processId: grant.binding.processId,
+      };
+      profile.session.file = join(policy.sessionDirectory, `${grant.binding.sessionId}.jsonl`);
+      profile.depth = grant.binding.depth;
+      try {
+        const roleFile = join(policy.sessionDirectory, `${grant.binding.sessionId}-role.md`);
+        writeFileSync(
+          roleFile,
+          `Role binding: ${JSON.stringify({ role: profile.role, cwd: profile.cwd })}\nComplete only the assigned task.\n${input.roleInstructions ?? ""}`,
+          { flag: "wx", mode: 0o400 },
+        );
+        profile.rolePrompt = referenceProfileFile(roleFile);
+        profile.resources.push({ kind: "append-prompt", ...profile.rolePrompt });
+        verifyProfileFiles(profile);
+        reserveProcessSession(profile);
+        return await run(input, profile, grant, proofs, captured.leases);
+      } finally {
+        await parentClient.control("release", {
+          agentId: grant.binding.agentId,
+          processId: grant.binding.processId,
+        });
+      }
     },
   };
 
   async function run(
     input: ProcessExecution,
     profile: ProcessStartProfile,
-    brokerCredential: ReturnType<LocalMessageBroker["register"]>,
+    grant: { binding: GroupBinding; credential: ParticipantCredential },
     originalProofs: ReadyProtectionSnapshot[],
     originalLeases: ProtectionSnapshotLease[],
   ): Promise<ProcessExecutionResult> {
-    if (disposed || active >= profile.limits.maxConcurrent)
-      throw new ProcessProfileError("CONCURRENCY_LIMIT");
+    if (disposed) throw new ProcessProfileError("PARENT_SESSION_CHANGED");
     if (busySessions.has(profile.session.file)) throw new ProcessProfileError("SESSION_BUSY");
     busySessions.add(profile.session.file);
-    active++;
     let process: ProcessRpc | undefined;
     try {
       verifyProcessResources(profile);
       verifyProcessSession(profile);
       const fresh = await capture(profile.cwd);
-      if (JSON.stringify(fresh.resources) !== JSON.stringify(profile.resources))
+      if (
+        JSON.stringify(fresh.resources) !==
+        JSON.stringify(profile.resources.filter((r) => r.path !== profile.rolePrompt?.path))
+      )
         throw new ProcessProfileError("PARENT_RESOURCE_CHANGED");
       const incarnation = {
         ...profile,
-        identity: { ...profile.identity, processId: randomUUID() },
+        identity: { ...profile.identity, processId: grant.binding.processId },
       };
       const identity = {
         taskId: input.taskId,
@@ -261,6 +340,15 @@ export async function attachProcessRunner(
         sessionFile: profile.session.file,
         cwd: profile.cwd,
       };
+      const resultIdentity = {
+        resultId: `${incarnation.identity.processId}:result`,
+        taskId: input.taskId,
+        childAgentId: incarnation.identity.agentId,
+        childSessionId: incarnation.identity.sessionId,
+        childProcessId: incarnation.identity.processId,
+        parentSessionId: parentIdentity.sessionId,
+      };
+      communication.results.expect(resultIdentity);
       input.onIdentity?.(identity);
       process = await ProcessRpc.start({
         startupTimeoutMs: childStartupTimeoutMs,
@@ -281,9 +369,23 @@ export async function attachProcessRunner(
           profile: incarnation,
           credentials: policy.credentials,
           parentCwd: fresh.parent.cwd,
-          roleInstructions: input.roleInstructions,
+          taskGoal: input.prompt,
           protections: fresh.proofs,
-          broker: brokerCredential,
+          broker: grant.credential,
+          groupBinding: grant.binding,
+          settingsSourceCwd,
+          hostPolicy: {
+            ...policy,
+            limits: profile.limits,
+            onInspectionDiagnostic: undefined,
+            extensions: [
+              ...fresh.classification,
+              {
+                path: fileURLToPath(new URL("./process-boundary.ts", import.meta.url)),
+                protectionId: null,
+              },
+            ].filter((entry, index, all) => all.findIndex((e) => e.path === entry.path) === index),
+          },
         },
         onEvent: input.onEvent,
         onInspectionDiagnostic: policy.onInspectionDiagnostic,
@@ -347,21 +449,39 @@ export async function attachProcessRunner(
         },
       });
       running.add(process);
-      const responseText = await process.prompt(`Task:\n${input.prompt}`, {
+      const handoffPromise = communication.waitResult(
+        resultIdentity,
+        profile.limits.timeoutSeconds * 1000,
+      );
+      await process.prompt(`Task:\n${input.prompt}`, {
         maxTurns: profile.limits.maxTurns,
         timeoutMs: profile.limits.timeoutSeconds * 1000,
         signal: input.signal,
+        completion: handoffPromise,
       });
+      const handoff = await handoffPromise;
       return {
-        responseText,
-        resume: (prompt, signal) =>
-          run(
-            { ...input, prompt, signal },
-            profile,
-            brokerCredential,
-            originalProofs,
-            originalLeases,
-          ),
+        responseText: JSON.stringify(handoff.result, null, 2),
+        delivery: handoff.delivery,
+        resume: async (prompt, signal) => {
+          const next = await parentClient.control<typeof grant>("resume", {
+            agentId: grant.binding.agentId,
+          });
+          try {
+            return await run(
+              { ...input, prompt, signal },
+              profile,
+              next,
+              originalProofs,
+              originalLeases,
+            );
+          } finally {
+            await parentClient.control("release", {
+              agentId: next.binding.agentId,
+              processId: next.binding.processId,
+            });
+          }
+        },
       };
     } finally {
       if (process) {
@@ -369,7 +489,6 @@ export async function attachProcessRunner(
         await process.close();
       }
       busySessions.delete(profile.session.file);
-      active--;
     }
   }
   const unsubscribe = getParent().eventBus.on(PROCESS_RUNNER_EVENT, (request) => {
@@ -378,8 +497,10 @@ export async function attachProcessRunner(
   return async () => {
     disposed = true;
     unsubscribe();
+    unbindCommunication();
+    communication.close();
     await Promise.allSettled([...running].map((p) => p.close()));
-    parentClient.close();
-    await broker.close();
+    if (!nested) parentClient.close();
+    await broker?.close();
   };
 }

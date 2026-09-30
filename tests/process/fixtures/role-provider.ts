@@ -67,7 +67,50 @@ export default function (pi: ExtensionAPI): void {
       // Intentionally emit even unoffered tools, exercising actual SDK dispatch and the boundary.
       const calls: Array<{ name: string; arguments: Record<string, unknown> }> = prefix
         ? JSON.parse(prompt.slice(prefix.length))
-        : [];
+        : [...prompt.matchAll(/<task-id>([^<]+)<\/task-id>/g)].map((match) => ({
+            name: "get_subagent_result",
+            arguments: { agent_id: match[1] },
+          }));
+      if (last?.role === "toolResult" && last.toolName === "list_agent_group") {
+        const group = JSON.parse(
+          last.content
+            .filter((p) => p.type === "text")
+            .map((p) => p.text)
+            .join(""),
+        );
+        const self = group.members.find((m: any) => m.agentId === group.self);
+        const sibling = group.members.find(
+          (m: any) => m.active && m.parentId === self.parentId && m.agentId !== self.agentId,
+        );
+        if (sibling)
+          calls.push({
+            name: "send_agent_message",
+            arguments: { agent_id: sibling.agentId, message: "sibling-steer-marker" },
+          });
+        if (sibling && process.env.PASA_SIBLING_RELEASE)
+          calls.push({
+            name: "bash",
+            arguments: {
+              command: `printf 'released\\n' > '${process.env.PASA_SIBLING_RELEASE.replaceAll("'", "'\\''")}'`,
+            },
+          });
+      }
+      if (
+        prompt.startsWith("Agent message: ") &&
+        JSON.parse(prompt.slice("Agent message: ".length)).message === "sibling-steer-marker"
+      )
+        calls.push({
+          name: "write",
+          arguments: { path: "steering.txt", content: "sibling steering at safe model transition" },
+        });
+      if (prompt.startsWith("Agent message: ")) {
+        const message = JSON.parse(prompt.slice("Agent message: ".length));
+        if (message.message === "nested-background-help" && message.requestId)
+          calls.push({
+            name: "reply_agent_message",
+            arguments: { request_id: message.requestId, message: "model direct answer" },
+          });
+      }
       const message: AssistantMessage = {
         role: "assistant",
         api: model.api,

@@ -428,12 +428,25 @@ export async function integrateSnapshotWorktree(
   const originals: Files = new Map();
   let desired: Files = new Map();
   try {
-    const worktree = await loadWorktree(info.path);
-    if (worktree.id !== info.id || worktree.baseCommit !== info.baseCommit)
-      throw new Error("Worktree registration mismatch");
-    if (!worktree.snapshot) throw new Error("Integration requires a working-content snapshot");
+    const original = structuredClone(info);
+    if (!original.snapshot) throw new Error("Integration requires a working-content snapshot");
+    const snapshot = original.snapshot;
+    const sameRegistration = (actual: WorktreeInfo) => {
+      if (
+        actual.id !== original.id ||
+        actual.path !== original.path ||
+        actual.baseCommit !== original.baseCommit ||
+        !actual.snapshot ||
+        (["parentPath", "parentHead", "ref", "excludePaths", "untrackedPaths"] as const).some(
+          (key) => JSON.stringify(actual.snapshot![key]) !== JSON.stringify(snapshot[key]),
+        )
+      )
+        throw new Error("Worktree snapshot registration mismatch");
+    };
+    const worktree = await loadWorktree(original.path);
+    sameRegistration(worktree);
     cwd = await root(cwd);
-    if (cwd !== worktree.snapshot.parentPath)
+    if (cwd !== snapshot.parentPath)
       throw new Error("Integration requires the original parent checkout");
     const common = await text(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     lockPath = join(common, "pi-subagents-integration.lock");
@@ -454,13 +467,13 @@ export async function integrateSnapshotWorktree(
     result.changedPaths = [...new Set([...base.keys(), ...desired.keys()])]
       .filter((path) => !same(base.get(path), desired.get(path)))
       .sort();
-    await rejectNested(cwd, worktree.snapshot.excludePaths);
-    await rejectNested(worktree.path, worktree.snapshot.excludePaths);
+    await rejectNested(cwd, snapshot.excludePaths);
+    await rejectNested(worktree.path, snapshot.excludePaths);
     const skip = await ignored(cwd, result.changedPaths);
     for (const path of await ignored(worktree.path, result.changedPaths)) skip.add(path);
     for (const path of result.changedPaths) {
       try {
-        if (excluded(path, worktree.snapshot.excludePaths) || skip.has(path))
+        if (excluded(path, snapshot.excludePaths) || skip.has(path))
           throw new Error("Excluded secret or ignored resource");
         const actual = await readEntry(cwd, path);
         if (!same(actual, base.get(path)) && !same(actual, desired.get(path)))
@@ -477,6 +490,8 @@ export async function integrateSnapshotWorktree(
       !sameIdentity(childBefore, await identity(worktree.path))
     )
       throw new Error("Concurrent parent or child change before integration");
+    // Recheck immediately before mutation. All decisions above use the retained selection.
+    sameRegistration(await loadWorktree(original.path));
     for (const path of result.changedPaths) {
       const now = await identity(cwd);
       if (

@@ -39,6 +39,9 @@ export default function (pi: ExtensionAPI): void {
     }
   };
   pi.on("before_agent_start", () => verifyBeforeModel("child:model"));
+  // Pi calls context before every model turn, including queued steering, follow-ups,
+  // tool continuations and custom-message wakeups that do not emit before_agent_start.
+  pi.on("context", () => verifyBeforeModel("child:model"));
   // A resumed session can compact before before_agent_start is emitted.
   pi.on("session_before_compact", () => verifyBeforeModel("child:compaction"));
   pi.on("tool_call", async (event) => {

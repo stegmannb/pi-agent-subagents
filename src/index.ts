@@ -79,11 +79,18 @@ import {
   SPINNER,
 } from "./ui/agent-widget.ts";
 import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.ts";
+import {
+  findCommunication,
+  MANAGED_STATE_EVENT,
+  MANAGED_CHANGED_EVENT,
+  HELP_REQUEST_EVENT,
+} from "./process-communication.ts";
 
 import {
   cleanupWorktree,
   formatWorktreeStatus,
   inspectWorktree,
+  integrateSnapshotWorktree,
   loadWorktree,
   type WorktreeStatus,
 } from "./worktree.ts";
@@ -228,6 +235,7 @@ function buildDetails(
   base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
   record: {
     process?: import("./process-contract.ts").ProcessObservation;
+    resultDelivery?: import("./process-results.ts").ResultDelivery;
     worktreeResult?: WorktreeStatus;
     toolUses: number;
     startedAt: number;
@@ -245,6 +253,7 @@ function buildDetails(
   return {
     ...base,
     process: record.process,
+    resultDelivery: record.resultDelivery,
     worktree: record.worktreeResult,
     toolUses: record.toolUses,
     tokens: formatLifetimeTokens(record),
@@ -409,6 +418,7 @@ export default function (pi: ExtensionAPI) {
         } catch {
           /* ignore */
         }
+        pi.events.emit(MANAGED_CHANGED_EVENT, {});
       }, delay),
     );
   }
@@ -425,6 +435,11 @@ export default function (pi: ExtensionAPI) {
     if (record.resultConsumed) return;
     const notification = formatTaskNotification(record, 500);
     const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : "";
+    const channel = findCommunication(pi.events);
+    if (channel) {
+      channel.wake(notification + footer, "followUp");
+      return;
+    }
 
     pi.sendMessage<NotificationDetails>(
       {
@@ -465,6 +480,14 @@ export default function (pi: ExtensionAPI) {
         : partial
           ? `${unconsumed.length} agent(s) finished (partial — others still running)`
           : `${unconsumed.length} agent(s) finished`;
+      const channel = findCommunication(pi.events);
+      if (channel) {
+        channel.wake(
+          `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+          "followUp",
+        );
+        return;
+      }
 
       const [first, ...rest] = unconsumed;
       const details = buildNotificationDetails(first!, 300, agentActivity.get(first!.id));
@@ -545,6 +568,11 @@ export default function (pi: ExtensionAPI) {
 
   const manager = new AgentManager(
     (record) => {
+      queueMicrotask(() => pi.events.emit(MANAGED_CHANGED_EVENT, {}));
+      if (record.resultDelivery && !record.resultDelivery.ingested) {
+        widget.update();
+        return;
+      }
       const isError =
         record.status === "error" || record.status === "stopped" || record.status === "aborted";
       const eventData = buildEventData(record);
@@ -617,6 +645,28 @@ export default function (pi: ExtensionAPI) {
   );
 
   let currentCtx: ExtensionContext | undefined;
+  const unbindHelp = pi.events.on(HELP_REQUEST_EVENT, (value) => {
+    const help = value as { requestId: string; from: string; message: string };
+    currentCtx?.ui.notify(
+      `Agent ${help.from} requests help: ${help.message}\nReply directly: /agent-reply ${help.requestId} MESSAGE`,
+      "info",
+    );
+  });
+  const unbindManaged = pi.events.on(MANAGED_STATE_EVENT, (value) => {
+    (value as { set(pending: boolean): void }).set(
+      findCommunication(pi.events)?.pending === true ||
+        pendingNudges.size > 0 ||
+        currentBatchAgents.length > 0 ||
+        manager
+          .listAgents()
+          .some(
+            (record) =>
+              record.completionPending === true ||
+              ["running", "waiting", "queued"].includes(record.status) ||
+              (record.resultDelivery !== undefined && !record.resultDelivery.ingested),
+          ),
+    );
+  });
   const widget = new AgentWidget(manager, agentActivity);
 
   // ---- Join mode ----
@@ -672,6 +722,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    unbindManaged();
+    unbindHelp();
     unsubSpawn();
     unsubStop();
     currentCtx = undefined;
@@ -742,7 +794,7 @@ Guidelines:
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Set cwd to the git repository the agent should work in whenever the parent session cwd is a workspace, a parent folder, or otherwise not that repository. Workspace folders with nested repos are common.
 - Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
-- Omit isolation only when it is not possible or would be wrong: cwd is not a git repo, the repo has no commits, or the agent must see uncommitted/untracked files in the live working tree. Isolated worktrees start from committed HEAD unless worktree_base specifies an existing ref. Worktrees remain until explicit cleanup.
+- Omit isolation only when cwd is not a git repo, has no commits, or the agent must act in the live checkout. Isolated worktrees start from committed HEAD unless worktree_base specifies an existing ref. Use worktree_snapshot for staged/unstaged changes and explicitly selected new files. Worktrees remain until explicit cleanup.
 - Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
 - Use timeout_seconds to bound wall-clock runtime for agents that might hang or run too long; the agent is aborted once the limit is reached, independent of turn count.`,
@@ -801,10 +853,31 @@ Guidelines:
               "Existing branch, tag or commit for worktree isolation. Resolved to a fixed commit before creation. Default: HEAD. Requires isolation: worktree.",
           }),
         ),
+        worktree_snapshot: Type.Optional(
+          Type.Object(
+            {
+              untracked_paths: Type.Optional(
+                Type.Array(Type.String(), {
+                  description:
+                    "Exact repository-relative new files to include. No globs or directories.",
+                }),
+              ),
+              exclude_paths: Type.Optional(
+                Type.Array(Type.String(), {
+                  description: "Repository-relative files or directory prefixes to exclude.",
+                }),
+              ),
+            },
+            {
+              description:
+                "Explicit working-changes snapshot, including staged and unstaged tracked content. Requires a new worktree without worktree_base. Empty object selects no untracked files. Parent branch, index and files remain unchanged.",
+            },
+          ),
+        ),
         isolation: Type.Optional(
           Type.Literal("worktree", {
             description:
-              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a retained worktree from HEAD or worktree_base. Omit only if cwd is not a git repo, has no commits, or the agent must see uncommitted/untracked files.',
+              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a retained worktree from HEAD, worktree_base or explicit worktree_snapshot. Omit only if cwd is not a git repo, has no commits, or the agent must act in the live checkout.',
           }),
         ),
       }),
@@ -881,6 +954,13 @@ Guidelines:
           }
           return new Text(line + worktreeText, 0, 0);
         }
+        if (details.resultDelivery && !details.resultDelivery.ingested)
+          return new Text(
+            theme.fg("warning", "Result delivery pending: parent session write failed.") +
+              worktreeText,
+            0,
+            0,
+          );
 
         if (details.status === "stopped") {
           const s = stats(details);
@@ -921,7 +1001,14 @@ Guidelines:
           );
         }
 
-        const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
+        const channel = findCommunication(pi.events);
+        const executionRunner = params.runner ?? (channel?.binding.parentId ? "rpc" : undefined);
+        const resolvedConfig = resolveAgentInvocationConfig(
+          executionRunner === "rpc" && customConfig?.isDefault
+            ? { ...customConfig, model: undefined }
+            : customConfig,
+          params,
+        );
 
         let model = ctx.model;
         if (resolvedConfig.modelInput) {
@@ -941,6 +1028,21 @@ Guidelines:
         if (params.worktree_base !== undefined && (isolation !== "worktree" || params.resume)) {
           return textResult("worktree_base requires a new Agent with isolation: worktree.");
         }
+        if (
+          params.worktree_snapshot !== undefined &&
+          (isolation !== "worktree" || params.resume || params.worktree_base !== undefined)
+        ) {
+          return textResult(
+            "worktree_snapshot requires a new Agent with isolation: worktree and no worktree_base.",
+          );
+        }
+        const worktreeSnapshot =
+          params.worktree_snapshot === undefined
+            ? undefined
+            : {
+                untrackedPaths: params.worktree_snapshot.untracked_paths,
+                excludePaths: params.worktree_snapshot.exclude_paths,
+              };
         const agentCwd = resolveAgentCwd(ctx.cwd, params.cwd);
         if (!params.resume) {
           try {
@@ -994,6 +1096,11 @@ Guidelines:
             return textResult(`Agent "${params.resume}" has no active session to resume.`);
           const record = await manager.resume(params.resume, params.prompt, signal);
           if (!record) return textResult(`Failed to resume agent "${params.resume}".`);
+          if (record.resultDelivery && !record.resultDelivery.ingested)
+            return textResult(
+              `Result delivery pending: ${JSON.stringify(record.resultDelivery)}\n${record.result ?? ""}`,
+              buildDetails(detailBase, record),
+            );
           return textResult(
             record.result?.trim() || record.error?.trim() || "No output.",
             buildDetails(detailBase, record),
@@ -1018,7 +1125,7 @@ Guidelines:
           try {
             id = manager.spawn(pi, ctx, subagentType, params.prompt, {
               description: params.description,
-              runner: params.runner,
+              runner: executionRunner,
               model,
               maxTurns: effectiveMaxTurns,
               timeoutSeconds: effectiveTimeoutSeconds,
@@ -1028,6 +1135,7 @@ Guidelines:
               isBackground: true,
               isolation,
               worktreeBase: params.worktree_base,
+              worktreeSnapshot,
               cwd: agentCwd,
               invocation: agentInvocation,
               ...bgCallbacks,
@@ -1136,7 +1244,7 @@ Guidelines:
         try {
           record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
             description: params.description,
-            runner: params.runner,
+            runner: executionRunner,
             model,
             maxTurns: effectiveMaxTurns,
             timeoutSeconds: effectiveTimeoutSeconds,
@@ -1145,6 +1253,7 @@ Guidelines:
             thinkingLevel: thinking,
             isolation,
             worktreeBase: params.worktree_base,
+            worktreeSnapshot,
             cwd: agentCwd,
             invocation: agentInvocation,
             signal,
@@ -1170,6 +1279,11 @@ Guidelines:
         if (record.status === "error") {
           return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
         }
+        if (record.resultDelivery && !record.resultDelivery.ingested)
+          return textResult(
+            `Result delivery pending: ${JSON.stringify(record.resultDelivery)}\n${record.result ?? ""}`,
+            details,
+          );
 
         const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
         const statsParts = [`${record.toolUses} tool uses`];
@@ -1213,6 +1327,10 @@ Guidelines:
         }
 
         if (record.worktree) record.worktreeResult = await inspectWorktree(record.worktree);
+        if (record.resultDelivery && !record.resultDelivery.ingested)
+          return textResult(
+            `Result delivery pending: ${JSON.stringify(record.resultDelivery)}\n${record.result ?? ""}`,
+          );
         const displayName = getDisplayName(record.type);
         const duration = formatDuration(record.startedAt, record.completedAt);
         const tokens = formatLifetimeTokens(record);
@@ -1307,6 +1425,39 @@ Guidelines:
     }),
   );
 
+  pi.registerTool(
+    defineTool({
+      name: "integrate_subagent_worktree",
+      label: "Integrate Agent Worktree",
+      description:
+        "Explicitly apply only committed child changes from an inactive working-changes snapshot to its original parent checkout. Refuses dirty children and conflicting parent changes. Does not commit, merge, approve a review or remove the worktree. Stop external writers first.",
+      parameters: Type.Object({
+        agent_id: Type.String({ description: "Agent ID returned by Agent for this session." }),
+      }),
+      execute: async (_id, params) => {
+        const record = manager.getRecord(params.agent_id);
+        if (!record?.worktree) return textResult("Integration refused: no owned agent worktree.");
+        if (record.worktreeActive || ["running", "waiting", "queued"].includes(record.status))
+          return textResult("Integration refused: agent is still active.");
+        const snapshot = record.worktree.snapshot;
+        if (!snapshot)
+          return textResult("Integration refused: requires a working-changes snapshot.");
+        try {
+          const result = await integrateSnapshotWorktree(snapshot.parentPath, record.worktree);
+          record.worktreeResult = await inspectWorktree(record.worktree);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        } catch (error) {
+          return textResult(
+            `Integration refused: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    }),
+  );
+
   // ---- report_complete tool ----
 
   pi.registerTool(
@@ -1317,6 +1468,11 @@ Guidelines:
         "Report task completion with a structured summary. Call this when your task is done.",
       parameters: Type.Object({
         summary: Type.String({ description: "Concise summary of what was accomplished." }),
+        goal: Type.Optional(Type.String()),
+        basis: Type.Optional(Type.String()),
+        findings: Type.Optional(Type.String()),
+        evidence: Type.Optional(Type.Array(Type.String())),
+        blockers: Type.Optional(Type.Array(Type.String())),
         status: Type.Union(
           [Type.Literal("success"), Type.Literal("partial"), Type.Literal("failed")],
           {
@@ -1331,6 +1487,17 @@ Guidelines:
         ),
       }),
       execute: async (_toolCallId, params, _signal) => {
+        const channel = findCommunication(pi.events);
+        if (channel?.binding.parentId) {
+          channel.report = {
+            goal: params.goal,
+            basis: params.basis,
+            findings: params.findings ?? params.summary,
+            evidence: params.evidence ?? params.artifacts,
+            blockers: params.blockers ?? (params.status === "success" ? [] : [params.summary]),
+          };
+          return textResult("Report recorded. This is not review approval or a merge gate.");
+        }
         const ctx = agentContext.getStore();
         if (!ctx?.agentId)
           return textResult("Error: report_complete called outside of a subagent context.");
@@ -1361,6 +1528,16 @@ Guidelines:
         message: Type.String({ description: "Describe what you need help with." }),
       }),
       execute: async (_toolCallId, params, signal) => {
+        const channel = findCommunication(pi.events);
+        if (channel?.binding.parentId) {
+          try {
+            return textResult(`Parent responded: ${await channel.help(params.message, signal)}`);
+          } catch (error) {
+            return textResult(
+              `Help unresolved: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
         const ctx = agentContext.getStore();
         if (!ctx?.agentId)
           return textResult("Error: request_help called outside of a subagent context.");
@@ -1410,6 +1587,7 @@ Guidelines:
   // Hide subagent-only completion/help tools from parent sessions. They remain
   // registered so subagent sessions can enable them after binding extensions.
   function hideSubagentContextToolsFromParent() {
+    if (findCommunication(pi.events)?.binding.parentId) return;
     const activeTools = pi.getActiveTools();
     const filtered = activeTools.filter((tool) => !SUBAGENT_CONTEXT_TOOL_NAMES.includes(tool));
     if (filtered.length !== activeTools.length) {
@@ -1436,6 +1614,19 @@ Guidelines:
       }),
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         const record = manager.getRecord(params.agent_id);
+        const channel = findCommunication(pi.events);
+        if (channel && (record?.process || !record)) {
+          try {
+            await channel.steer(record?.process?.agentId ?? params.agent_id, params.message);
+            return textResult(
+              "Message received by addressed transport; model observation occurs at a safe transition.",
+            );
+          } catch (error) {
+            return textResult(
+              `Message unresolved: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
         if (!record) return textResult(`Agent not found: "${params.agent_id}".`);
 
         // Respond to a waiting agent (request_help)
@@ -1488,6 +1679,68 @@ Guidelines:
   );
 
   // ---- /agents command ----
+  pi.registerTool(
+    defineTool({
+      name: "list_agent_group",
+      label: "Agent Group",
+      description: "List authenticated group addresses and outstanding direct help requests.",
+      parameters: Type.Object({}),
+      execute: async () => {
+        const channel = findCommunication(pi.events);
+        if (!channel) return textResult("Process communication unavailable.");
+        return textResult(
+          JSON.stringify({
+            self: channel.binding.agentId,
+            members: await channel.members(),
+            help: channel.pendingHelp(),
+          }),
+        );
+      },
+    }),
+  );
+  pi.registerTool(
+    defineTool({
+      name: "send_agent_message",
+      label: "Message Agent",
+      description:
+        "Address a parent, child or sibling in the authenticated group; delivery is not task completion.",
+      parameters: Type.Object({ agent_id: Type.String(), message: Type.String() }),
+      execute: async (_id, params) => {
+        const channel = findCommunication(pi.events);
+        if (!channel) return textResult("Process communication unavailable.");
+        return textResult(
+          `Transport received message ${await channel.send(params.agent_id, params.message)}.`,
+        );
+      },
+    }),
+  );
+  pi.registerTool(
+    defineTool({
+      name: "reply_agent_message",
+      label: "Reply to Agent",
+      description: "Reply directly to a pending correlated help request.",
+      parameters: Type.Object({ request_id: Type.String(), message: Type.String() }),
+      execute: async (_id, params) => {
+        const channel = findCommunication(pi.events);
+        if (!channel) return textResult("Process communication unavailable.");
+        await channel.reply(params.request_id, params.message);
+        return textResult("Correlated reply received.");
+      },
+    }),
+  );
+  pi.registerCommand("agent-reply", {
+    description: "Reply directly while a model/tool is waiting: /agent-reply REQUEST_ID MESSAGE",
+    handler: async (args, ctx) => {
+      const [id, ...words] = args.trim().split(/\s+/);
+      const channel = findCommunication(pi.events);
+      if (!channel || !id || !words.length) {
+        ctx.ui.notify("Use /agent-reply REQUEST_ID MESSAGE", "error");
+        return;
+      }
+      await channel.reply(id, words.join(" "));
+      ctx.ui.notify("Correlated reply received.", "info");
+    },
+  });
 
   const projectAgentsDir = () => join(process.cwd(), ".pi", "agents");
   const personalAgentsDir = () => join(getAgentDir(), "agents");

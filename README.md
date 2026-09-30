@@ -16,6 +16,7 @@ Provides delegation tools and a `/agents` management command:
 | `get_subagent_result` | Check status and retrieve output from a background agent |
 | `steer_subagent` | Send a mid-run steering message to a running agent |
 | `cleanup_subagent_worktree` | Explicitly remove an owned worktree after inspection and integration |
+| `integrate_subagent_worktree` | Explicitly apply committed child changes from a working-changes snapshot |
 
 ## Built-in agent types
 
@@ -51,7 +52,7 @@ Agent(
 
 Set `cwd` to the git repository the agent should work in whenever the parent session was started from a workspace or another folder. Relative paths resolve from the parent session cwd.
 
-Use `isolation: "worktree"` whenever that `cwd` is a git repository with at least one commit. It creates a retained detached worktree from committed `HEAD`, or from an existing ref passed as `worktree_base`. Omit isolation only when that is not possible (not a git repo, no commits) or the agent must see uncommitted/untracked files in the live working tree. Invalid isolation requests fail. Worktrees and child commits survive completion, errors, cancellation and parent exit. See [retained worktrees](docs/worktrees.md) for result fields, manual inspection/integration and explicit cleanup.
+Use `isolation: "worktree"` whenever that `cwd` is a git repository with at least one commit. It creates a retained detached worktree from committed `HEAD`, an existing ref passed as `worktree_base`, or working changes explicitly selected with `worktree_snapshot`. Omit isolation only when that is not possible or the agent must act in the live checkout. Invalid isolation requests fail. Worktrees and child commits survive completion, errors, cancellation and parent exit. See [retained worktrees](docs/worktrees.md) for snapshot selection, result fields, explicit integration and cleanup.
 
 Run `/agents` in the pi TUI to browse agent types, manage running agents, and adjust settings (concurrency, max turns, join mode).
 
@@ -100,9 +101,10 @@ Your system prompt here.
 
 ## Local process messaging
 
-The standalone [local messaging API](docs/local-messaging.md) provides a versioned
-Unix socket broker and client for future process runners. It is not connected to
-the current runner or tools yet.
+The [local messaging API](docs/local-messaging.md) connects process agents through
+one authenticated Unix socket broker. The [delegation tools](docs/process-delegation.md)
+address parents, children and siblings, answer help requests directly, and retain
+the parent host until required results reach its persistent session.
 
 ## Requirements
 
@@ -119,3 +121,5 @@ enables explicit `runner: "rpc"` delegation with persistent Pi sessions, retaine
 worktrees, and verified Guard/Sandbox reproduction. Ordinary extension loading
 without that host refuses RPC selection because Pi 0.73.0 does not expose the
 full live resource inventory to extensions.
+Task processes can delegate independent read-only reviewers through the same host.
+The shared default limit is four running children and two levels below the root.

@@ -28,6 +28,14 @@ import { verifyProcessResources, verifyProcessSession } from "./process-session.
 import { LocalMessageClient } from "./messaging-client.ts";
 import type { ChildPolicyBinding } from "./process-boundary.ts";
 import { childFailureExitStatus } from "./process-child-failure.ts";
+import { attachProcessRunner } from "./process-runner.ts";
+import { childSettings } from "./process-settings.ts";
+import { captureProfileResources } from "./process-profile.ts";
+import {
+  findCommunication,
+  MANAGED_STATE_EVENT,
+  MANAGED_CHANGED_EVENT,
+} from "./process-communication.ts";
 
 async function boot(data: ProcessBootstrap): Promise<void> {
   const qualificationPreset = validateQualificationPreset(data.qualificationPreset);
@@ -42,23 +50,8 @@ async function boot(data: ProcessBootstrap): Promise<void> {
     authStorage,
     profile.resources.find((r) => r.kind === "provider")?.path,
   );
-  const parentSettings = SettingsManager.create(data.parentCwd, profile.agentDir);
-  // Pi merges nested settings one level deep. Keep child writes in memory.
-  const global = parentSettings.getGlobalSettings();
-  const project = parentSettings.getProjectSettings();
-  const merged: Record<string, unknown> = { ...global };
-  for (const [key, value] of Object.entries(project)) {
-    const prior = merged[key];
-    merged[key] =
-      value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      prior &&
-      typeof prior === "object" &&
-      !Array.isArray(prior)
-        ? { ...prior, ...value }
-        : value;
-  }
+  const settingsSourceCwd = data.settingsSourceCwd ?? data.parentCwd;
+  const merged = childSettings(settingsSourceCwd, profile.agentDir, profile);
   const settingsManager = SettingsManager.inMemory(merged);
   initTheme(settingsManager.getTheme(), false);
   settingsManager.setRetryEnabled(false);
@@ -66,7 +59,7 @@ async function boot(data: ProcessBootstrap): Promise<void> {
     profile.resources.filter((r) => r.kind === kind).map((r) => r.path);
   const text = (path: string) => readFileSync(path, "utf8");
   const boundary = realpathSync(fileURLToPath(new URL("./process-boundary.ts", import.meta.url)));
-  const extensions = [...paths("extension"), boundary];
+  const extensions = [...new Set([...paths("extension"), boundary])];
   let inspect!: (trace?: InspectionTrace) => Promise<ChildInspection>;
   let boundaryBound = false;
   eventBus.on(CHILD_POLICY_EVENT, (value) => {
@@ -95,11 +88,7 @@ async function boot(data: ProcessBootstrap): Promise<void> {
       agentsFiles: paths("instruction").map((path) => ({ path, content: text(path) })),
     }),
     systemPromptOverride: () => paths("system-prompt").map(text)[0],
-    appendSystemPromptOverride: () => [
-      ...paths("append-prompt").map(text),
-      `You are a subagent performing the ${profile.role.name} role in ${profile.cwd}. Complete only the assigned task.`,
-      ...(data.roleInstructions ? [data.roleInstructions] : []),
-    ],
+    appendSystemPromptOverride: () => paths("append-prompt").map(text),
   });
   await loader.reload();
   if (!boundaryBound) throw new ProcessProfileError("CHILD_POLICY_UNAVAILABLE");
@@ -129,10 +118,32 @@ async function boot(data: ProcessBootstrap): Promise<void> {
     client.participant.sessionId !== profile.identity.sessionId
   )
     throw new ProcessProfileError("BROKER_IDENTITY_MISMATCH");
+  const members = data.groupBinding
+    ? await client.control<import("./delegation-group.ts").GroupBinding[]>("members")
+    : [];
+  const actualBinding = members.find((m) => m.agentId === profile.identity.agentId);
+  if (
+    data.groupBinding &&
+    (!actualBinding ||
+      JSON.stringify(actualBinding) !== JSON.stringify(data.groupBinding) ||
+      actualBinding.depth !== profile.depth ||
+      actualBinding.maxConcurrent !== profile.limits.maxConcurrent ||
+      actualBinding.maxDepth !== profile.limits.maxDepth ||
+      actualBinding.processId !== profile.identity.processId ||
+      actualBinding.parentId !== profile.parent.agentId ||
+      JSON.stringify(actualBinding.role) !== JSON.stringify(profile.role))
+  )
+    throw new ProcessProfileError("BROKER_IDENTITY_MISMATCH");
   inspect = async (trace) => {
     const sync = <T>(phase: "resources" | "session" | "extensions", operation: () => T): T =>
       trace ? trace.sync(phase, operation) : operation();
     sync("resources", () => verifyProcessResources(profile, trace));
+    if (
+      JSON.stringify(settingsManager.getGlobalSettings()) !==
+        JSON.stringify(childSettings(settingsSourceCwd, profile.agentDir, profile)) ||
+      Object.keys(settingsManager.getProjectSettings()).length !== 0
+    )
+      throw new ProcessProfileError("PARENT_SETTINGS_DRIFT");
     sync("session", () => verifyProcessSession(profile));
     sync("extensions", () => {
       const actualExtensions = session.resourceLoader.getExtensions();
@@ -143,6 +154,36 @@ async function boot(data: ProcessBootstrap): Promise<void> {
       )
         throw new ProcessProfileError("CHILD_RESOURCE_MISMATCH");
       for (const path of extensions) referenceProfileFile(path);
+      if (profile.rolePrompt) {
+        const inventory = captureProfileResources(session.resourceLoader, {
+          cwd: profile.cwd,
+          agentDir: profile.agentDir,
+          settingsSourceCwd,
+          configurationFiles: data.hostPolicy?.nodeImports,
+          systemPromptFile: paths("system-prompt")[0],
+          appendSystemPromptFiles: paths("append-prompt"),
+        });
+        const expected = [...profile.resources];
+        if (!expected.some((r) => r.kind === "extension" && r.path === boundary))
+          expected.splice(
+            expected.findIndex(
+              (r) => r.kind !== "instruction" && r.kind !== "skill" && r.kind !== "extension",
+            ),
+            0,
+            { kind: "extension", ...referenceProfileFile(boundary) },
+          );
+        // Loader enumeration order groups resource kinds; compare the complete path/content set.
+        const canonical = (refs: typeof inventory) => refs.map((r) => JSON.stringify(r)).sort();
+        if (JSON.stringify(canonical(inventory)) !== JSON.stringify(canonical(expected)))
+          throw new ProcessProfileError("CHILD_RESOURCE_MISMATCH");
+        const roleText = text(profile.rolePrompt.path);
+        if (
+          !roleText.startsWith(
+            `Role binding: ${JSON.stringify({ role: profile.role, cwd: profile.cwd })}\n`,
+          )
+        )
+          throw new ProcessProfileError("CHILD_RESOURCE_MISMATCH");
+      }
     });
     const snapshots = [];
     for (const expected of data.protections) {
@@ -179,7 +220,7 @@ async function boot(data: ProcessBootstrap): Promise<void> {
       cwd: realpathSync(process.cwd()),
       sessionId: session.sessionId,
       tools: session.getActiveToolNames(),
-      extensions: extensions.slice(0, -1),
+      extensions: paths("extension"),
       protections: snapshots,
       brokerAgentId: client.participant.agentId,
     };
@@ -196,6 +237,62 @@ async function boot(data: ProcessBootstrap): Promise<void> {
   const runtime = new AgentSessionRuntime(session, services, async () => {
     throw new ProcessProfileError("CHILD_SESSION_REPLACEMENT_FORBIDDEN");
   });
+  const detach =
+    data.hostPolicy && actualBinding
+      ? await attachProcessRunner(
+          () => ({ session, cwd: profile.cwd, agentDir: profile.agentDir, eventBus }),
+          data.hostPolicy,
+          { client, binding: actualBinding, profile, settingsSourceCwd },
+        )
+      : undefined;
+  let published = false;
+  const maybePublish = () => {
+    void session.agent.waitForIdle().then(() => {
+      if (!actualBinding || published || session.isStreaming) return;
+      let pending = false;
+      eventBus.emit(MANAGED_STATE_EVENT, {
+        set: (value: boolean) => {
+          pending = value;
+        },
+      });
+      if (pending) return;
+      const last = session.messages.at(-1);
+      if (!last || last.role !== "assistant" || last.stopReason !== "stop") return;
+      const communication = findCommunication(eventBus);
+      if (!communication) return;
+      const parent = members.find((m) => m.agentId === actualBinding.parentId);
+      if (!parent) return;
+      published = true;
+      void communication
+        .publish({
+          resultId: `${actualBinding.processId}:result`,
+          taskId: actualBinding.taskId,
+          childAgentId: actualBinding.agentId,
+          childSessionId: actualBinding.sessionId,
+          childProcessId: actualBinding.processId,
+          parentSessionId: parent.sessionId,
+          goal: communication.report?.goal ?? data.taskGoal ?? "Assigned task",
+          basis:
+            communication.report?.basis ??
+            JSON.stringify({ cwd: profile.cwd, sessionFile: profile.session.file }),
+          findings:
+            communication.report?.findings ??
+            last.content
+              .filter((p) => p.type === "text")
+              .map((p) => p.text)
+              .join("\n"),
+          evidence: communication.report?.evidence ?? [profile.session.file],
+          blockers: communication.report?.blockers ?? [],
+        })
+        .catch((error) => {
+          process.exit(childFailureExitStatus("child:model", error));
+        });
+    });
+  };
+  session.subscribe((event) => {
+    if (event.type === "agent_end") maybePublish();
+  });
+  eventBus.on(MANAGED_CHANGED_EVENT, maybePublish);
   let diagnosticCount = 0;
   process.on("message", (message: { type?: string; id?: string; diagnosticStage?: unknown }) => {
     if (message.type !== "inspect" || typeof message.id !== "string") return;
@@ -228,14 +325,13 @@ async function boot(data: ProcessBootstrap): Promise<void> {
     );
   });
   process.on("disconnect", () => {
-    client.close();
-    void runtime
-      .dispose()
-      .finally(() =>
-        process.exit(
-          childFailureExitStatus("child:disconnect", { code: "CHILD_IPC_DISCONNECTED" }),
-        ),
-      );
+    void (async () => {
+      await detach?.();
+      client.close();
+      await runtime.dispose();
+    })().finally(() =>
+      process.exit(childFailureExitStatus("child:disconnect", { code: "CHILD_IPC_DISCONNECTED" })),
+    );
   });
   await runRpcMode(runtime);
 }

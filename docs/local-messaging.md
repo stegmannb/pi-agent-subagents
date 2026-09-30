@@ -2,8 +2,9 @@
 
 `src/messaging-broker.ts`, `src/messaging-client.ts` and
 `src/messaging-protocol.ts` implement a generic Unix socket transport. They have
-no Pi or model dependency. The existing runner and tools do not use this API yet.
-The transport does not start processes, manage worktrees, or persist sessions.
+no runtime Pi or model dependency. The [process delegation adapter](process-delegation.md)
+connects this transport to the actual Pi session and tools. The transport itself
+does not start processes, manage worktrees, or persist sessions.
 
 ## API
 
@@ -41,6 +42,16 @@ including siblings and itself; `parentId` does not grant additional privileges.
 Different groups cannot communicate. `sessionId` is metadata, not an address.
 A task identifier belongs in the application payload; a PID belongs in the
 runner. Neither is used as agent or session identity.
+
+The process host uses `registerRoot(sessionId, role, limits)` instead of manual
+registration. Authenticated `control("reserve", ...)`, `control("resume", ...)`,
+`control("release", ...)`, and `control("members")` requests go to that same root
+broker. Reserve validates a subset of the parent's role and narrower limits,
+then atomically allocates agent/session/incarnation IDs and a private credential.
+Resume keeps agent and session IDs but rotates both incarnation ID and credential.
+Only the direct parent can resume or release its child. Read-only members cannot
+reserve or resume. Transport-only registrations have no delegation authority.
+These controls are trusted host APIs, not model tool parameters.
 
 `register()` returns `{ socketPath, capability }`, containing a random 256-bit
 capability for exactly one participant. Keep it private and pass it only to that

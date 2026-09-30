@@ -36,6 +36,10 @@ export const ERROR_CODES = [
   "DISCONNECTED",
   "BROKER_CLOSED",
   "BROKER_DISCONNECTED",
+  "INVALID_GROUP_LIMIT",
+  "CONCURRENCY_LIMIT",
+  "DEPTH_EXCEEDED",
+  "SESSION_BUSY",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export class TransportError extends Error {
@@ -144,6 +148,7 @@ export type ClientFrame =
   | { version: 1; type: "send"; envelope: Envelope }
   | { version: 1; type: "received"; messageId: string; from: string };
 export type ServerFrame =
+  | { version: 1; type: "control-result"; id: string; value?: unknown; code?: ErrorCode }
   | { version: 1; type: "ready"; participant: Participant; limits: TransportLimits }
   | { version: 1; type: "message"; envelope: Envelope }
   | { version: 1; type: "accepted" | "received"; messageId: string }

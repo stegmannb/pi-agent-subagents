@@ -107,6 +107,10 @@ function streamScript(model: Model<Api>, context: Context, options?: SimpleStrea
         });
       } else if (prompt.startsWith("TUI:cleanup:")) {
         response = tool("cleanup_subagent_worktree", { path: prompt.slice("TUI:cleanup:".length) });
+      } else if (prompt.startsWith("TUI:integrate:")) {
+        response = tool("integrate_subagent_worktree", {
+          agent_id: prompt.slice("TUI:integrate:".length),
+        });
       } else if (prompt.startsWith("TUI:agent:")) {
         response = tool("Agent", {
           prompt: prompt.slice("TUI:agent:".length),

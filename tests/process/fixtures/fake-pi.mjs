@@ -115,6 +115,20 @@ for await (const line of createInterface({ input: process.stdin })) {
       },
     });
     send({ type: "turn_end" });
+    if (mode.startsWith("managed-")) {
+      if (mode === "managed-wake") send({ type: "agent_end" });
+      if (mode === "managed-wake") send({ type: "agent_start" });
+      send({ type: "turn_start" });
+      send({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "continued" }],
+        },
+      });
+      send({ type: "turn_end" });
+    }
     send({ type: "agent_end" });
     if (mode === "late-ack") ack();
   } else {

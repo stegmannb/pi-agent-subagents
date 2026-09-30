@@ -79,6 +79,14 @@
       showOutput = true;
     };
 
+    "test:delegation" = {
+      description = "Run actual SDK delegation, messaging, result persistence and workspace tool tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run test:delegation";
+      showOutput = true;
+    };
+
     "test:process:tui" = {
       description = "Run the interactive companion-host RPC test.";
       after = [ "deps:install" ];

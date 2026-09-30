@@ -19,29 +19,64 @@ lockfile and scripts disabled. Sources live under ignored `test-results/` paths.
 No checkout credentials or other worker directories are required. Missing
 sources, failed native initialization, or changed tracked source fail the suite.
 On macOS the named devenv task runs this suite directly. On Linux it builds
-`checks.x86_64-linux.process-protections`, which runs the same suite inside the
+`checks.x86_64-linux.process-protections`, which requires eight runs of the
 isolated VM described in [protection-vm.md](protection-vm.md). This requires a
 local or configured remote x86_64-linux Nix builder. The guest includes
 Bubblewrap, socat and ripgrep for actual OS sandbox initialization.
 
-The mandatory `process-protections / process-protections` CI job builds that
-check on every push and pull request. It replaces the direct protection-suite
-invocation on the restricted CI host. The independent factory smoke job proves
-VM infrastructure; only this consumer executes the actual seven protection
-cases. A boot error, unavailable capability, failed assertion or timeout fails
-the job. Its 45-minute build limit surrounds the factory's unchanged 1200-second
-VM limit. Build output and guest journals are uploaded as
-`process-protections-logs`, including the build log on failure.
+The `process-protections` workflow runs eight mandatory matrix jobs on every
+push and pull request. Each job builds one suite on the existing runner class
+and has a 45-minute limit for preparation, building and execution. Each VM
+retains its 1200-second limit. `fail-fast: false` lets the other suites finish
+if one fails. The independent factory smoke job proves VM infrastructure;
+these consumer suites qualify the actual protection and delegation behavior.
+
+All eight suites use the same immutable `preparedBundle` and unchanged VM
+factory. Each suffix identifies a `process-protections-<suite>` Nix check,
+matrix job and directory in the local aggregate output:
+
+| Suite | Cases | Required behavior |
+| --- | --- | --- |
+| `baseline-rpc` | 5 | Original Guard and Sandbox RPC cases. |
+| `baseline-ui` | 2 | Read-only role enforcement and interactive protection. |
+| `nested-review` | 1 | Protected nested review and correction. |
+| `nested-roles` | 2 | Protected role-file drift at startup and continuation. |
+| `communication-joins` | 4 | SDK review/correction and all three join modes. |
+| `communication-address` | 4 | Foreground help, sibling steering and role-file drift. |
+| `communication-help` | 3 | Background help in all three join modes. |
+| `communication-results` | 6 | Four pending-ingestion cases, shared OS-process budgets and actual SDK session persistence. |
+
+The local aggregate derivation depends on all eight successful VM outputs and
+retains their separate service logs and journals. It cannot succeed with a
+missing run. CI's `process-protections` completion job depends on the entire
+matrix and runs even after a failure. It accepts only a matrix result of
+`success`; a failed, cancelled, skipped or missing result cannot pass. That job
+does not rebuild the VMs. Require all eight suite results and the completion
+job for the same commit. A green completion job alone is not the full evidence.
+
+Each matrix job uploads `process-protections-<suite>-logs`, including the
+streamed build log on failure and the service log and journal when produced.
+Boot errors, unavailable capabilities, failed assertions and timeouts fail the
+affected suite and prevent aggregate success. The split preserves all 27 cases
+exactly once, with their original assertions. Each suite uses the fixture timing
+policy described below.
+The macOS command still runs all 27 cases together. Actual CI timing must be
+measured on its runner; local success does not establish CI runtime. Matrix
+scheduling and preparation can increase total wall time beyond one job's limit.
 
 The VM sets `PASA_PROTECTION_VM=1` only for its test process. The fixtures
 explicitly configure `policy.childStartupTimeoutMs: 120000` and allow the same
 bound for the test Parent's first `get_state` response. They also explicitly
-select the existing `limits.timeoutSeconds: 120` for Child runs under TCG.
+select `limits.timeoutSeconds: 180` for Child runs under TCG. This finite
+functional test allowance includes preprompt checks and nested Child startup;
+it does not pause or restart while a nested reviewer runs.
 Native fixtures and product defaults remain unchanged. The QEMU fixtures also
 select `policy.qualificationPreset: "qemu-functional"` for the fixed 20/40/80-second
 snapshot, inspection and initial-readiness windows described below. Ordinary
 control requests retain their deadlines. Outer waits include startup and run budgets; the
 690-second case bound accounts for Parent startup and two Child incarnations.
+Each Parent prompt retains its 285-second deadline, the Child-done wait remains
+260 seconds, and the VM and CI job limits remain 1200 seconds and 45 minutes.
 Parent startup and Child process age at the first model invocation are logged. These measurements
 include TCG overhead and are not native runtime performance claims.
 
@@ -49,6 +84,19 @@ include TCG overhead and are not native runtime performance claims.
 nix build --no-update-lock-file --print-build-logs \
   .#checks.x86_64-linux.process-protections
 ```
+
+To limit simultaneous VM runs on a configured builder, build explicit suite
+checks in pairs, then run the aggregate command above. For example:
+
+```sh
+nix build --no-update-lock-file --print-build-logs \
+  .#checks.x86_64-linux.process-protections-baseline-rpc \
+  .#checks.x86_64-linux.process-protections-baseline-ui
+```
+
+Build the remaining six suite checks on the same source before the final
+aggregate. Preserve each original build log and output directory. A single
+suite or pair is not a complete qualification.
 
 `nix/protection-bundle.nix` builds an offline test input from an explicit source
 fileset and three fixed-output `fetchPnpmDeps` stores. The runner includes its
@@ -62,7 +110,7 @@ After copying that directory to an owned writable test directory, run
 `PASA_PROTECTION_PREPARED=1 pnpm run test:process:protections`. This mode performs
 no package installation. It rechecks source provenance and every preinstalled
 dependency file hash, symlink target and executable bit before running the same
-seven real tests. A changed or added dependency refuses the run. The prepared
+test suite. A changed or added dependency refuses the run. The prepared
 bundle is a test input; it supplies no protection readiness attestations.
 
 ## Starting the host
@@ -214,6 +262,9 @@ process occurs.
 
 ## RPC and results
 
+The [delegation contract](process-delegation.md) defines shared group limits,
+addressed tools, nested roles, persistent result ingestion and parent wakeups.
+
 `src/process-rpc.ts` implements the installed Pi 0.73.0 JSONL protocol.
 A correlated successful `prompt` response means preflight acceptance, not task
 success. Pi acknowledges only after input hooks, possible compaction and
@@ -228,6 +279,19 @@ The transport also requires `agent_start`, an assistant `message_end`
 with stop reason `stop`, and `agent_end`. Text deltas, terminal readiness, an
 empty event stream or early exit cannot mark completion. Provider errors,
 aborts, truncated results, command rejection and deadline expiry fail the run.
+For a managed process task, the authenticated result handoff is also required.
+An intermediate `agent_end` may be followed by a guarded automatic continuation
+while children or results are pending. It does not reset the original deadline
+or cumulative turn counter.
+
+The result collector starts its deadline just before the managed RPC prompt.
+Expiry of either run timer terminates the Child with `TIME_LIMIT` and emits one
+`process_limit` event with `limit: "time"`. A result-collection timeout uses a
+dedicated local error type; arbitrary channel errors with the same text are
+not interpreted as timer expiry. Other collection failures remain
+`RESULT_DELIVERY_FAILED`. A received result with failed persistence keeps its
+separate `ResultDelivery.error: "PARENT_SESSION_WRITE_FAILED"` and
+`ingested: false`; no timeout path invents result receipt or persistence.
 
 JSONL frames and private IPC bootstrap/inspection messages have a four-MiB size
 limit. Command queues and waits are bounded. Unexpected correlation and invalid
@@ -366,9 +430,10 @@ finite snapshot bound.
 Inspection and initial readiness have separate timers. The latter starts before
 the initial inspection; preprompt verification never restarts the whole-run
 budget. Ordinary RPC requests retain their existing timeout, including explicit
-caller overrides. First-response startup, prompt acknowledgement, whole-run,
-outer test, VM and CI budgets are unchanged. The preset is valid only for a
-private bootstrapped transport; it does not extend generic Pi RPC readiness.
+caller overrides. Selecting this preset does not change first-response startup,
+prompt acknowledgement, whole-run, outer test, VM or CI budgets. The preset is
+valid only for a private bootstrapped transport; it does not extend generic Pi
+RPC readiness.
 
 Only the real QEMU protection fixtures opt in, alongside their existing explicit
 startup allowance. Ordinary SDK and macOS tests use defaults. Linux qualification

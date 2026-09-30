@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { inspectWorktree, loadWorktree } from "../../src/worktree.ts";
@@ -44,6 +44,61 @@ async function retained(app: PiFixture) {
     }
   }, "worktree registration completes");
 }
+
+test(
+  "TUI background snapshot selection and explicit integration refuse an active child",
+  { timeout: 60_000 },
+  async (t) => {
+    await withPi(t, { cols: 160, rows: 50 }, async (app) => {
+      const base = setup(app);
+      writeFileSync(join(app.projectDir, "tracked"), "parent working change\n");
+      writeFileSync(join(app.projectDir, "selected"), "selected\n");
+      writeFileSync(join(app.projectDir, "excluded"), "excluded\n");
+      const parentIndex = readFileSync(join(app.projectDir, ".git/index"));
+      await prompt(
+        app,
+        "TUI:worktree:" +
+          JSON.stringify({
+            prompt: "CHILD:wait:snapshot",
+            run_in_background: true,
+            worktree_snapshot: { untracked_paths: ["selected"], exclude_paths: ["excluded"] },
+          }),
+      );
+      await app.waitFor(
+        () => app.readEvents("events.ndjson").some((e) => e.event === "waiting"),
+        "child waits",
+      );
+      const wt = await retained(app);
+      const started = app.readEvents().find((e) => e.event === "started");
+      assert.ok(wt.snapshot);
+      assert.equal(wt.snapshot.parentHead, base);
+      assert.equal(readFileSync(join(wt.path, "tracked"), "utf8"), "parent working change\n");
+      assert.equal(readFileSync(join(wt.path, "selected"), "utf8"), "selected\n");
+      assert.equal(existsSync(join(wt.path, "excluded")), false);
+      await prompt(app, `TUI:integrate:${started.data.id}`);
+      await app.expect("Integration refused: agent is still active.");
+      writeFileSync(join(app.controlDir, "release-snapshot"), "release\n");
+      await app.waitFor(
+        () => app.readEvents().some((e) => e.event === "completed"),
+        "child finishes",
+      );
+      writeFileSync(join(wt.path, "child.txt"), "child only\n");
+      git(wt.path, "add", "child.txt");
+      git(wt.path, "commit", "-qm", "child");
+      await prompt(app, `TUI:integrate:${started.data.id}`);
+      await app.expect('"integrated":true');
+      assert.equal(readFileSync(join(app.projectDir, "child.txt"), "utf8"), "child only\n");
+      assert.equal(
+        readFileSync(join(app.projectDir, "tracked"), "utf8"),
+        "parent working change\n",
+      );
+      assert.equal(readFileSync(join(app.projectDir, "excluded"), "utf8"), "excluded\n");
+      assert.deepEqual(readFileSync(join(app.projectDir, ".git/index")), parentIndex);
+      assert.equal(git(app.projectDir, "rev-parse", "HEAD"), base);
+      assert.equal((await inspectWorktree(wt)).exists, true);
+    });
+  },
+);
 
 for (const mode of ["complete", "error", "abort", "parent-end"] as const) {
   for (const work of ["clean", "dirty", "commit"] as const) {

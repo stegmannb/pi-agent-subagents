@@ -3,6 +3,8 @@
  */
 
 import { requireProcessRunner } from "./process-runner.ts";
+import { findCommunication, MANAGED_CHANGED_EVENT } from "./process-communication.ts";
+import { PARENT_AGENT_TOOL_NAMES, SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
 import { buildParentContext } from "./context.ts";
 import { getAgentConfig, getToolNamesForType } from "./agent-types.ts";
 import type { ProcessExecutionResult } from "./process-contract.ts";
@@ -19,7 +21,12 @@ import type {
 } from "./types.ts";
 import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
-import { createWorktree, inspectWorktree } from "./worktree.ts";
+import {
+  createWorktree,
+  createSnapshotWorktree,
+  inspectWorktree,
+  type SnapshotOptions,
+} from "./worktree.ts";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
@@ -52,6 +59,7 @@ export interface SpawnOptions {
   isBackground?: boolean;
   isolation?: IsolationMode;
   worktreeBase?: string;
+  worktreeSnapshot?: SnapshotOptions;
   cwd?: string;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
@@ -127,6 +135,17 @@ export class AgentManager {
     prompt: string,
     options: SpawnOptions,
   ): string {
+    const channel = findCommunication(pi.events);
+    if (channel?.binding.parentId) {
+      if (channel.binding.role.readOnly || options.runner === "in-process")
+        throw new Error("ROLE_DELEGATION_FORBIDDEN");
+      options = { ...options, runner: "rpc" };
+    }
+    if (
+      options.worktreeSnapshot &&
+      (options.isolation !== "worktree" || options.worktreeBase !== undefined)
+    )
+      throw new Error("worktree_snapshot requires isolation: worktree without worktree_base.");
     if (options.runner === "rpc") requireProcessRunner(pi.events);
     const id = randomUUID().slice(0, 17);
     const abortController = new AbortController();
@@ -193,10 +212,13 @@ export class AgentManager {
     };
 
     const sourceCwd = options.cwd ?? ctx.cwd;
+    record.completionPending = true;
     const promise = (async () => {
       let worktreeCwd: string | undefined;
       if (options.isolation === "worktree") {
-        const wt = await createWorktree(sourceCwd, id, options.worktreeBase);
+        const wt = options.worktreeSnapshot
+          ? await createSnapshotWorktree(sourceCwd, id, options.worktreeSnapshot)
+          : await createWorktree(sourceCwd, id, options.worktreeBase);
         record.worktree = wt;
         worktreeCwd = wt.path;
       }
@@ -207,6 +229,22 @@ export class AgentManager {
             pi.getActiveTools().includes(name) &&
             !getAgentConfig(type)?.disallowedTools?.includes(name),
         );
+        if (!getAgentConfig(type)?.readOnly) {
+          const registered = pi.getAllTools().map((t) => t.name);
+          for (const name of [
+            ...PARENT_AGENT_TOOL_NAMES,
+            ...SUBAGENT_CONTEXT_TOOL_NAMES,
+            "send_agent_message",
+            "reply_agent_message",
+            "list_agent_group",
+          ])
+            if (
+              registered.includes(name) &&
+              !getAgentConfig(type)?.disallowedTools?.includes(name) &&
+              !tools.includes(name)
+            )
+              tools.push(name);
+        }
         let turns = 0;
         const result = await requireProcessRunner(pi.events).execute({
           taskId: id,
@@ -265,6 +303,7 @@ export class AgentManager {
           },
         });
         this.processResumes.set(id, result.resume);
+        record.resultDelivery = result.delivery;
         return {
           responseText: result.responseText,
           session: undefined,
@@ -315,6 +354,7 @@ export class AgentManager {
       .then(async ({ responseText, session, aborted, steered, timedOut }) => {
         if (record.status !== "stopped") {
           record.status = aborted ? "aborted" : steered ? "steered" : "completed";
+          if (record.resultDelivery && !record.resultDelivery.ingested) record.status = "waiting";
         }
         record.timedOut = timedOut;
         record.result = responseText;
@@ -379,6 +419,10 @@ export class AgentManager {
           this.drainQueue();
         }
         return "";
+      })
+      .finally(() => {
+        record.completionPending = false;
+        pi.events.emit(MANAGED_CHANGED_EVENT, {});
       });
 
     record.promise = promise;
@@ -447,6 +491,7 @@ export class AgentManager {
         if (resume) {
           const result = await resume(prompt, record.abortController.signal);
           this.processResumes.set(id, result.resume);
+          record.resultDelivery = result.delivery;
           responseText = result.responseText;
         } else {
           responseText = await resumeAgent(record.session!, prompt, {
@@ -466,7 +511,9 @@ export class AgentManager {
       } finally {
         signal?.removeEventListener("abort", onAbort);
       }
-      if ((record.status as AgentRecord["status"]) !== "stopped") record.status = "completed";
+      if ((record.status as AgentRecord["status"]) !== "stopped")
+        record.status =
+          record.resultDelivery && !record.resultDelivery.ingested ? "waiting" : "completed";
       record.result = responseText;
       record.completedAt = Date.now();
     } catch (err) {
