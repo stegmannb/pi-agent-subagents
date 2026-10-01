@@ -24,7 +24,8 @@ let
         pkgs.which
         pkgs.bash
       ];
-      timeoutSeconds = 1200;
+      # Leave 300 s beyond the 2100-s case budget for guest boot and log/VM cleanup.
+      timeoutSeconds = 2400;
     };
   suites = {
     baseline-rpc = run "baseline-rpc" [

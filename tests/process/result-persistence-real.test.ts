@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch } from "node:fs";
+import { once } from "node:events";
+import { Worker } from "node:worker_threads";
+import { protectionCaseTimeoutMs } from "./parent-startup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -184,3 +187,77 @@ test("actual Pi session file proves ingestion; delayed persistence and memory-fi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "failure evidence is published whole and retains the first real failed append",
+  { timeout: protectionCaseTimeoutMs },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "pasa-failure-publication-"));
+    const marker = join(root, "failed-result.json");
+    const release = new Int32Array(new SharedArrayBuffer(4));
+    const observed = Promise.withResolvers<void>();
+    const partial = Promise.withResolvers<void>();
+    const published = Promise.withResolvers<string>();
+    const done = Promise.withResolvers<{ first: unknown; sessionFile: string }>();
+    let finalEvents = 0;
+    // Capture parse/read failures without an unhandled rejection before the gate opens.
+    void published.promise.catch(() => {});
+    const watcher = watch(root, (_event, name) => {
+      if (name === "failed-result.json" || name === "failed-result.json.tmp") observed.resolve();
+      if (name !== "failed-result.json") return;
+      finalEvents++;
+      try {
+        const text = readFileSync(marker, "utf8");
+        JSON.parse(text);
+        published.resolve(text);
+      } catch (error) {
+        published.reject(error);
+      }
+    });
+    const worker = new Worker(
+      new URL("./fixtures/result-write-failure-probe.mjs", import.meta.url),
+      {
+        workerData: { root, marker, release: release.buffer },
+      },
+    );
+    worker.on("message", (message) => {
+      if (message.type === "partial") partial.resolve();
+      if (message.type === "done") done.resolve(message);
+    });
+    const exited = once(worker, "exit").then(([code]) => {
+      assert.equal(code, 0);
+    });
+    void exited.catch(() => {});
+    try {
+      await Promise.race([
+        Promise.all([partial.promise, observed.promise]),
+        exited.then(() => {
+          throw new Error("writer exited before the partial-write barrier");
+        }),
+      ]);
+      assert.equal(finalEvents, 0, "the real watcher has no final signal during a partial write");
+      assert.equal(existsSync(marker), false);
+      assert.throws(() => JSON.parse(readFileSync(`${marker}.tmp`, "utf8")), SyntaxError);
+      Atomics.store(release, 0, 1);
+      Atomics.notify(release, 0);
+      const [text, result] = await Promise.all([published.promise, done.promise, exited]);
+      const evidence = JSON.parse(text);
+      assert.equal(evidence.sessionFile, result.sessionFile);
+      assert.deepEqual(evidence.data, result.first);
+      assert.equal(evidence.entries.length, 1);
+      assert.deepEqual(evidence.entries[0].data, result.first);
+      assert.equal(existsSync(`${marker}.tmp`), false);
+      assert.equal(
+        readFileSync(marker, "utf8"),
+        text,
+        "a later append preserves the first evidence",
+      );
+    } finally {
+      Atomics.store(release, 0, 1);
+      Atomics.notify(release, 0);
+      await worker.terminate();
+      watcher.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

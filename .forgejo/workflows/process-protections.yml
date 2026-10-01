@@ -15,7 +15,8 @@ jobs:
   process-protections-suite:
     name: process-protections-${{ matrix.suite }}
     runs-on: [k8s-executor-medium, amd64]
-    timeout-minutes: 45
+    # Enclose the 40-minute VM budget plus build and artifact handling.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 1
