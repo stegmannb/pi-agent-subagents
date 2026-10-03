@@ -16,6 +16,7 @@ export const COMMUNICATION_EVENT = "pasa:communication:v1";
 export const MANAGED_STATE_EVENT = "pasa:managed-state:v1";
 export const MANAGED_CHANGED_EVENT = "pasa:managed-changed:v1";
 export const HELP_REQUEST_EVENT = "pasa:help-request:v1";
+export const PROCESS_DIALOG_EVENT = "pasa:process-dialog:v1";
 export class ProcessCommunication {
   readonly binding: GroupBinding;
   readonly results: ResultLedger;
@@ -31,6 +32,7 @@ export class ProcessCommunication {
   private wakeQueue: Promise<void> = Promise.resolve();
   private pendingWakes = 0;
   private readonly bus: EventBus;
+  private readonly beforeWake?: () => void;
   report?: {
     goal?: string;
     basis?: string;
@@ -43,11 +45,13 @@ export class ProcessCommunication {
     binding: GroupBinding,
     session: AgentSession,
     bus: EventBus,
+    beforeWake?: () => void,
   ) {
     this.client = client;
     this.binding = binding;
     this.session = session;
     this.bus = bus;
+    this.beforeWake = beforeWake;
     this.results = new ResultLedger(
       (result) => this.persist(result),
       () => this.changed(),
@@ -66,6 +70,7 @@ export class ProcessCommunication {
     this.wakeQueue = this.wakeQueue
       .then(async () => {
         if (this.ended) return;
+        this.beforeWake?.();
         // Use the public guarded prompt path, including input and before_agent_start.
         // Raw custom-message triggerTurn bypasses those hooks when the session is idle.
         await this.session.prompt(content, {
@@ -121,6 +126,35 @@ export class ProcessCommunication {
     if (saved.length !== 1 || JSON.stringify(saved[0].data) !== JSON.stringify(result))
       throw new Error("PARENT_SESSION_WRITE_FAILED");
   }
+  /** Re-read the owning session immediately before successful process cleanup. */
+  verifyIngested(identity: ResultIdentity): ResultDelivery {
+    const entry = this.results.get(identity.resultId);
+    if (
+      !entry?.result ||
+      !entry.status.ingested ||
+      JSON.stringify(entry.status.identity) !== JSON.stringify(identity) ||
+      this.session.sessionId !== identity.parentSessionId ||
+      !this.session.sessionFile
+    )
+      throw new Error("RESULT_INGESTION_UNPROVEN");
+    const entries = readFileSync(this.session.sessionFile, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const saved = entries.filter(
+      (e) =>
+        e.type === "custom" &&
+        e.customType === "pasa:result" &&
+        e.data?.resultId === identity.resultId,
+    );
+    if (
+      entries[0]?.id !== identity.parentSessionId ||
+      saved.length !== 1 ||
+      JSON.stringify(saved[0].data) !== JSON.stringify(entry.result)
+    )
+      throw new Error("RESULT_INGESTION_UNPROVEN");
+    return entry.status;
+  }
   private changed(): void {
     for (const [id, waiter] of this.waiters) {
       const status = this.results.get(id)?.status;
@@ -158,10 +192,14 @@ export class ProcessCommunication {
   async members(): Promise<GroupBinding[]> {
     return this.client.control("members");
   }
-  async send(to: string, message: string): Promise<string> {
+  async send(to: string, message: string, processId?: string): Promise<string> {
     const target = to === "parent" ? this.binding.parentId : to;
     if (!target) throw new Error("PARENT_UNAVAILABLE");
-    const handle = this.client.event(target, { type: "steer", message });
+    const handle = this.client.event(target, {
+      type: "steer",
+      message,
+      ...(processId ? { processId } : {}),
+    });
     await handle.received;
     return handle.messageId;
   }
@@ -181,6 +219,7 @@ export class ProcessCommunication {
       );
       if (!isRecord(reply.payload) || typeof reply.payload.message !== "string")
         throw new Error("INVALID_REPLY");
+      this.beforeWake?.();
       return reply.payload.message;
     } finally {
       signal?.removeEventListener("abort", cancel);
@@ -200,10 +239,10 @@ export class ProcessCommunication {
     this.requests.delete(id);
     this.bus.emit(MANAGED_CHANGED_EVENT, {});
   }
-  async steer(to: string, message: string): Promise<void> {
+  async steer(to: string, message: string, processId?: string): Promise<void> {
     const request = [...this.requests.values()].find((e) => e.from === to);
     if (request) await this.reply(request.messageId, message);
-    else await this.send(to, message);
+    else await this.send(to, message, processId);
   }
   async publish(result: AgentResult): Promise<void> {
     if (!this.binding.parentId) throw new Error("PARENT_UNAVAILABLE");

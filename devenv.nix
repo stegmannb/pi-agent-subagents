@@ -87,6 +87,14 @@
       showOutput = true;
     };
 
+    "test:lifecycle" = {
+      description = "Run ownership, bounded termination, dialog and result-gated cleanup tests.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec = "pnpm run test:lifecycle";
+      showOutput = true;
+    };
+
     "test:process:tui" = {
       description = "Run the interactive companion-host RPC test.";
       after = [ "deps:install" ];

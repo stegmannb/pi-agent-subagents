@@ -179,6 +179,7 @@ export async function inspectWorktree(worktree: WorktreeInfo): Promise<WorktreeS
 export async function cleanupWorktree(
   cwd: string,
   worktree: WorktreeInfo,
+  beforeRemove?: () => void,
 ): Promise<WorktreeCleanupResult> {
   const status = await inspectWorktree(worktree);
   try {
@@ -199,6 +200,7 @@ export async function cleanupWorktree(
         throw new Error("Worktree commits are not integrated into the cleanup caller's HEAD");
       }
     }
+    beforeRemove?.();
     await git(cwd, ["worktree", "remove", worktree.path]);
     return { ...status, exists: false, removed: true };
   } catch (error) {

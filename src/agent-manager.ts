@@ -74,6 +74,7 @@ export interface SpawnOptions {
 export class AgentManager {
   private agents = new Map<string, AgentRecord>();
   private processResumes = new Map<string, ProcessExecutionResult["resume"]>();
+  private processRunners = new Map<string, import("./process-contract.ts").ProcessRunner>();
   private cleanupInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
@@ -246,7 +247,9 @@ export class AgentManager {
               tools.push(name);
         }
         let turns = 0;
-        const result = await requireProcessRunner(pi.events).execute({
+        const processRunner = requireProcessRunner(pi.events);
+        this.processRunners.set(id, processRunner);
+        const result = await processRunner.execute({
           taskId: id,
           prompt: (options.inheritContext ? buildParentContext(ctx) : "") + prompt,
           roleInstructions: getAgentConfig(type)?.systemPrompt,
@@ -269,8 +272,26 @@ export class AgentManager {
           signal: record.abortController!.signal,
           onIdentity: (identity) => {
             record.process = identity;
+            if (
+              [
+                "question",
+                "result-pending",
+                "cleanup-pending",
+                "cleanup-error",
+                "detached",
+              ].includes(identity.phase ?? "")
+            )
+              record.status = "waiting";
+            else if (["lost", "uncertain"].includes(identity.phase ?? "")) record.status = "error";
+            else if (["starting", "running"].includes(identity.phase ?? ""))
+              record.status = "running";
           },
           onEvent: (event) => {
+            if (event.type === "process_identity_uncertain" && record.process) {
+              record.process = { ...record.process, phase: "uncertain" };
+              record.status = "error";
+            }
+            if (event.type === "process_ownership_changed") record.status = "waiting";
             options.onProcessEvent?.(event);
             pi.events.emit("subagents:process_event", { identity: record.process, event });
             if (event.type === "turn_end") options.onTurnEnd?.(++turns);
@@ -355,6 +376,10 @@ export class AgentManager {
         if (record.status !== "stopped") {
           record.status = aborted ? "aborted" : steered ? "steered" : "completed";
           if (record.resultDelivery && !record.resultDelivery.ingested) record.status = "waiting";
+          if (record.process && record.process.phase !== "completed")
+            record.status = ["lost", "uncertain"].includes(record.process.phase ?? "")
+              ? "error"
+              : "waiting";
         }
         record.timedOut = timedOut;
         record.result = responseText;
@@ -514,6 +539,10 @@ export class AgentManager {
       if ((record.status as AgentRecord["status"]) !== "stopped")
         record.status =
           record.resultDelivery && !record.resultDelivery.ingested ? "waiting" : "completed";
+      if (record.process && record.process.phase !== "completed")
+        record.status = ["lost", "uncertain"].includes(record.process.phase ?? "")
+          ? "error"
+          : "waiting";
       record.result = responseText;
       record.completedAt = Date.now();
     } catch (err) {
@@ -538,6 +567,16 @@ export class AgentManager {
   abort(id: string): boolean {
     const record = this.agents.get(id);
     if (!record) return false;
+    if (record.process) {
+      try {
+        const current = this.processRunners
+          .get(id)
+          ?.inspect?.(record.process as import("./process-lifecycle.ts").ProcessHandle);
+        if (!current || current.ownership !== "managed") return false;
+      } catch {
+        return false;
+      }
+    }
 
     if (record.status === "queued") {
       this.queue = this.queue.filter((q) => q.id !== id);
@@ -553,6 +592,21 @@ export class AgentManager {
     }
 
     if (record.status === "waiting") {
+      if (record.process) {
+        record.abortController?.abort();
+        if (
+          ["result-pending", "cleanup-pending", "cleanup-error"].includes(
+            record.process.phase ?? "",
+          )
+        )
+          void this.processRunners
+            .get(id)
+            ?.abort?.(record.process as import("./process-lifecycle.ts").ProcessHandle)
+            .catch((error) => {
+              record.status = "error";
+              record.error = error instanceof Error ? error.message : String(error);
+            });
+      }
       const resolve = record.helpResolver;
       record.helpResolver = undefined;
       record.helpMessage = undefined;
@@ -572,10 +626,12 @@ export class AgentManager {
   private removeRecord(id: string, record: AgentRecord): void {
     // A stopped status acknowledges cancellation; the execution may still own the worktree.
     if (record.worktreeActive) return;
+    if (record.process && record.process.phase !== "completed") return;
     record.session?.dispose?.();
     record.session = undefined;
     this.agents.delete(id);
     this.processResumes.delete(id);
+    this.processRunners.delete(id);
   }
 
   private cleanup() {
@@ -621,6 +677,10 @@ export class AgentManager {
     this.queue = [];
     for (const record of this.agents.values()) {
       if (record.status === "waiting") {
+        if (record.process) {
+          if (this.abort(record.id)) count++;
+          continue;
+        }
         const resolve = record.helpResolver;
         record.helpResolver = undefined;
         record.helpMessage = undefined;
@@ -629,6 +689,10 @@ export class AgentManager {
         resolve?.("[cancelled: all agents stopped]");
         count++;
       } else if (record.status === "running") {
+        if (record.process) {
+          if (this.abort(record.id)) count++;
+          continue;
+        }
         record.abortController?.abort();
         record.status = "stopped";
         record.completedAt = Date.now();
@@ -643,6 +707,7 @@ export class AgentManager {
       this.drainQueue();
       const pending = [...this.agents.values()]
         .filter((r) => r.status === "running" || r.status === "queued" || r.status === "waiting")
+        .filter((r) => !(r.process && r.completedAt !== undefined))
         .map((r) => r.promise)
         .filter(Boolean);
       if (pending.length === 0) break;
@@ -658,5 +723,6 @@ export class AgentManager {
     }
     this.agents.clear();
     this.processResumes.clear();
+    this.processRunners.clear();
   }
 }

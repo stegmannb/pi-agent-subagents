@@ -16,6 +16,12 @@ import type { LocalMessageClient } from "./messaging-client.ts";
 export const PROCESS_RUNNER_EVENT = "pasa:process-runner:v1";
 export const CHILD_POLICY_EVENT = "pasa:child-policy:v1";
 export interface ProcessObservation {
+  ownership?: import("./process-lifecycle.ts").ProcessOwnership;
+  revision?: number;
+  phase?: import("./process-lifecycle.ts").ProcessPhase;
+  /** Optional transport binding. A pane label alone is never a process identity. */
+  paneId?: string;
+  paneProcessId?: string;
   taskId: string;
   agentId: string;
   sessionId: string;
@@ -50,8 +56,21 @@ export interface ProcessRunner {
    * Consumers must inspect delivery and preserve/report pending results after a save failure.
    */
   execute(input: ProcessExecution): Promise<ProcessExecutionResult>;
+  abort?(handle: import("./process-lifecycle.ts").ProcessHandle): Promise<void>;
+  inspect?(
+    handle: import("./process-lifecycle.ts").ProcessHandle,
+  ): import("./process-lifecycle.ts").ProcessRegistration;
+  takeover?(
+    handle: import("./process-lifecycle.ts").ProcessHandle,
+    ownership: "manual" | "external",
+  ): Promise<import("./process-lifecycle.ts").ProcessRegistration>;
+  cleanup?(
+    handle: import("./process-lifecycle.ts").ProcessHandle,
+  ): Promise<import("./process-lifecycle.ts").ProcessRegistration>;
 }
 export interface ProcessHostPolicy {
+  /** Trusted host declares an actual human answer channel. Absent leaves requests blocked. */
+  humanAnswerChannel?: "interactive" | "rpc";
   /** Explicit trusted-host functional QEMU qualification; production default is absent. */
   qualificationPreset?: QualificationPreset;
   /** Trusted host code only. Never accepted from Agent arguments. Default off. */

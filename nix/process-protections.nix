@@ -28,6 +28,11 @@ let
       timeoutSeconds = 2400;
     };
   suites = {
+    lifecycle = run "lifecycle" [
+      "src/process-lifecycle.test.ts"
+      "tests/process/lifecycle-rpc-real.test.ts"
+      "tests/process/lifecycle-host-real.test.ts"
+    ];
     baseline-rpc = run "baseline-rpc" [
       "tests/process/protections-real.test.ts"
     ];

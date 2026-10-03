@@ -18,6 +18,11 @@ import {
   type TransportLimits,
 } from "./messaging-protocol.ts";
 import { JsonLineWire } from "./messaging-wire.ts";
+import {
+  ProcessRegistry,
+  type ProcessHandle,
+  type ProcessRegistration,
+} from "./process-lifecycle.ts";
 
 export interface ParticipantCredential {
   socketPath: string;
@@ -40,6 +45,7 @@ interface Delivery {
   expires: number;
   received: boolean;
   pending?: NodeJS.Timeout;
+  processId?: string;
 }
 function key(from: string, messageId: string): string {
   return `${from}/${messageId}`;
@@ -56,6 +62,8 @@ export class LocalMessageBroker {
   private readonly deliveries = new Map<string, Delivery>();
   private readonly groups = new Map<string, DelegationGroup>();
   private readonly memberCredentials = new Map<string, ParticipantCredential>();
+  private readonly registries = new Map<string, ProcessRegistry>();
+  private readonly runs = new Map<string, ProcessRegistration>();
   private closed = false;
   private closing?: Promise<void>;
   private constructor(directory: string, limits: TransportLimits) {
@@ -108,6 +116,7 @@ export class LocalMessageBroker {
     sessionId: string,
     role: ProcessRole,
     limits: { maxConcurrent: number; maxDepth: number },
+    lifecycleDirectory?: string,
   ): {
     binding: GroupBinding;
     credential: ParticipantCredential;
@@ -127,6 +136,8 @@ export class LocalMessageBroker {
     const group = new DelegationGroup(binding);
     const credential = this.register(binding);
     this.groups.set(binding.groupId, group);
+    if (lifecycleDirectory)
+      this.registries.set(binding.groupId, new ProcessRegistry(lifecycleDirectory));
     this.memberCredentials.set(binding.agentId, credential);
     return { binding, credential };
   }
@@ -139,7 +150,58 @@ export class LocalMessageBroker {
       let value: unknown;
       const input = frame.input;
       if (frame.operation === "members") value = [...group.members.values()];
-      else if (frame.operation === "reserve") {
+      else if (frame.operation === "register-process" && isRecord(input)) {
+        const member = group.members.get(input.agentId as string);
+        const registry = this.registries.get(participant.groupId);
+        if (
+          !registry ||
+          !member?.active ||
+          member.parentId !== participant.agentId ||
+          input.taskId !== member.taskId ||
+          input.sessionId !== member.sessionId ||
+          input.processId !== member.processId ||
+          input.parentSessionId !== participant.sessionId ||
+          input.parentAgentId !== participant.agentId ||
+          typeof input.sessionFile !== "string" ||
+          typeof input.cwd !== "string" ||
+          input.pid !== undefined
+        )
+          throw new TransportError("FORBIDDEN");
+        value = registry.register(
+          input as unknown as Omit<ProcessHandle, "ownership" | "revision" | "routeParentId">,
+        );
+        this.runs.set(member.agentId, value as ProcessRegistration);
+      } else if (
+        ["bind-process", "takeover-process", "check-process"].includes(frame.operation as string) &&
+        isRecord(input) &&
+        isRecord(input.handle)
+      ) {
+        const handle = input.handle as unknown as ProcessHandle;
+        const member = group.members.get(handle.agentId);
+        const held = this.runs.get(handle.agentId);
+        const registry = this.registries.get(participant.groupId);
+        if (
+          !member ||
+          !held ||
+          !registry ||
+          member.parentId !== participant.agentId ||
+          member.processId !== handle.processId ||
+          held.processId !== handle.processId ||
+          member.sessionId !== handle.sessionId ||
+          member.taskId !== handle.taskId
+        )
+          throw new TransportError("FORBIDDEN");
+        try {
+          if (frame.operation === "bind-process")
+            value = registry.bindPid(handle, input.pid as number);
+          else if (frame.operation === "takeover-process")
+            value = registry.takeover(handle, input.ownership as "manual" | "external");
+          else value = registry.read(handle);
+        } catch {
+          throw new TransportError("FORBIDDEN");
+        }
+        this.runs.set(member.agentId, value as ProcessRegistration);
+      } else if (frame.operation === "reserve") {
         if (this.participants.size >= this.limits.maxParticipants)
           throw new TransportError("CAPACITY");
         const binding = group.reserve(participant.agentId, input);
@@ -152,6 +214,12 @@ export class LocalMessageBroker {
           throw error;
         }
       } else if (frame.operation === "resume" && isRecord(input) && isId(input.agentId)) {
+        const run = this.runs.get(input.agentId);
+        if (
+          run &&
+          this.registries.get(participant.groupId)!.read(run, false).ownership !== "managed"
+        )
+          throw new TransportError("FORBIDDEN");
         const previousRegistration = this.participants.get(input.agentId);
         const binding = group.resume(
           participant.agentId,
@@ -175,6 +243,12 @@ export class LocalMessageBroker {
         isId(input.agentId) &&
         isId(input.processId)
       ) {
+        const run = this.runs.get(input.agentId);
+        if (
+          run &&
+          this.registries.get(participant.groupId)!.read(run, false).ownership !== "managed"
+        )
+          throw new TransportError("FORBIDDEN");
         group.release(participant.agentId, input.agentId, input.processId);
         value = null;
       } else throw new TransportError("PROTOCOL_ERROR");
@@ -288,6 +362,30 @@ export class LocalMessageBroker {
     const target = this.participants.get(envelope.to);
     if (!target) throw new TransportError("UNKNOWN_TARGET");
     if (target.participant.groupId !== sender.groupId) throw new TransportError("FORBIDDEN");
+    const senderRun = this.runs.get(sender.agentId);
+    if (
+      senderRun &&
+      isRecord(envelope.payload) &&
+      (["steer", "help"].includes(envelope.payload.type as string) || envelope.kind === "reply")
+    ) {
+      const current = this.registries.get(sender.groupId)!.read(senderRun, false);
+      if (current.ownership !== "managed") throw new TransportError("FORBIDDEN");
+    }
+    const run = this.runs.get(envelope.to);
+    if (
+      run &&
+      isRecord(envelope.payload) &&
+      (["steer", "help"].includes(envelope.payload.type as string) || envelope.kind === "reply")
+    ) {
+      const current = this.registries.get(sender.groupId)!.read(run, false);
+      if (
+        current.ownership !== "managed" ||
+        (current.routeParentId !== sender.agentId && sender.agentId === run.parentAgentId) ||
+        (envelope.payload.processId !== undefined &&
+          envelope.payload.processId !== current.processId)
+      )
+        throw new TransportError("FORBIDDEN");
+    }
     this.prune();
     const id = key(envelope.from, envelope.messageId);
     const fingerprint = createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
@@ -311,6 +409,8 @@ export class LocalMessageBroker {
       ) {
         throw new TransportError("INVALID_CORRELATION");
       }
+      if (envelope.kind === "reply" && run && request.processId !== run.processId)
+        throw new TransportError("INVALID_CORRELATION");
     }
     let reserved = 0;
     let senderPending = 0;
@@ -340,6 +440,7 @@ export class LocalMessageBroker {
       fingerprint,
       expires: Date.now() + this.limits.dedupeTtlMs,
       received: false,
+      processId: this.runs.get(envelope.from)?.processId,
     };
     this.deliveries.set(id, delivery);
     if (envelope.kind === "request") {

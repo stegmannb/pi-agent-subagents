@@ -84,7 +84,11 @@ import {
   MANAGED_STATE_EVENT,
   MANAGED_CHANGED_EVENT,
   HELP_REQUEST_EVENT,
+  PROCESS_DIALOG_EVENT,
 } from "./process-communication.ts";
+import { requireProcessRunner } from "./process-runner.ts";
+import type { ProcessHandle } from "./process-lifecycle.ts";
+import type { ProcessDialogDispatch } from "./process-dialog.ts";
 
 import {
   cleanupWorktree,
@@ -569,7 +573,10 @@ export default function (pi: ExtensionAPI) {
   const manager = new AgentManager(
     (record) => {
       queueMicrotask(() => pi.events.emit(MANAGED_CHANGED_EVENT, {}));
-      if (record.resultDelivery && !record.resultDelivery.ingested) {
+      if (
+        (record.resultDelivery && !record.resultDelivery.ingested) ||
+        (record.process && record.process.phase !== "completed" && record.status === "waiting")
+      ) {
         widget.update();
         return;
       }
@@ -645,6 +652,31 @@ export default function (pi: ExtensionAPI) {
   );
 
   let currentCtx: ExtensionContext | undefined;
+  const unbindDialog = pi.events.on(PROCESS_DIALOG_EVENT, (value) => {
+    const { request, signal, resolve, reject } = value as ProcessDialogDispatch;
+    const ctx = currentCtx;
+    if (!ctx?.hasUI || signal.aborted) return;
+    void (async () => {
+      const options = { signal, timeout: request.timeout };
+      const response =
+        request.method === "confirm"
+          ? { confirmed: await ctx.ui.confirm(request.title, request.message, options) }
+          : {
+              value:
+                request.method === "select"
+                  ? await ctx.ui.select(request.title, request.options, options)
+                  : await ctx.ui.input(request.title, request.placeholder, options),
+            };
+      if (!signal.aborted)
+        resolve({
+          type: "extension_ui_response",
+          id: request.id,
+          ...("value" in response && response.value === undefined
+            ? { cancelled: true }
+            : (response as { value: string } | { confirmed: boolean })),
+        });
+    })().catch(reject);
+  });
   const unbindHelp = pi.events.on(HELP_REQUEST_EVENT, (value) => {
     const help = value as { requestId: string; from: string; message: string };
     currentCtx?.ui.notify(
@@ -724,6 +756,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     unbindManaged();
     unbindHelp();
+    unbindDialog();
     unsubSpawn();
     unsubStop();
     currentCtx = undefined;
@@ -1284,6 +1317,11 @@ Guidelines:
             `Result delivery pending: ${JSON.stringify(record.resultDelivery)}\n${record.result ?? ""}`,
             details,
           );
+        if (record.process && record.process.phase !== "completed")
+          return textResult(
+            `Process lifecycle pending: ${JSON.stringify(record.process)}\n${record.result ?? ""}`,
+            details,
+          );
 
         const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
         const statsParts = [`${record.toolUses} tool uses`];
@@ -1342,12 +1380,15 @@ Guidelines:
         statsParts.push(`Duration: ${duration}`);
 
         let output = `Agent: ${record.id}\nType: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\nDescription: ${record.description}\n\n`;
+        if (record.process) output += `Process lifecycle: ${JSON.stringify(record.process)}\n`;
 
         if (record.status === "running" || record.status === "waiting") {
           output +=
-            record.status === "waiting"
-              ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
-              : "Agent is still running. Use wait: true or check back later.";
+            record.process && record.status === "waiting"
+              ? `Process is waiting in phase ${record.process.phase}. Human dialogs require the declared human UI channel; pending cleanup can be retried with control_subagent_process.\n`
+              : record.status === "waiting"
+                ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
+                : "Agent is still running. Use wait: true or check back later.";
         } else if (record.status === "error") {
           output += `Error: ${record.error}`;
         } else {
@@ -1407,12 +1448,33 @@ Guidelines:
                 (record) =>
                   record.worktree?.id === worktree.id &&
                   (["running", "waiting", "queued"].includes(record.status) ||
-                    record.worktreeActive),
+                    record.worktreeActive ||
+                    (record.process !== undefined && record.process.phase !== "completed")),
               )
           ) {
             return textResult("Cleanup refused: agent is still active.");
           }
-          const result = await cleanupWorktree(resolveAgentCwd(ctx.cwd, params.cwd), worktree);
+          const result = await cleanupWorktree(
+            resolveAgentCwd(ctx.cwd, params.cwd),
+            worktree,
+            () => {
+              for (const record of manager.listAgents()) {
+                if (record.worktree?.id !== worktree.id) continue;
+                if (
+                  record.worktreeActive ||
+                  ["running", "waiting", "queued"].includes(record.status)
+                )
+                  throw new Error("PROCESS_ACTION_REFUSED");
+                if (record.process) {
+                  const current = requireProcessRunner(pi.events).inspect?.(
+                    record.process as ProcessHandle,
+                  );
+                  if (!current || current.ownership !== "managed" || current.phase !== "completed")
+                    throw new Error("PROCESS_IDENTITY_UNPROVEN");
+                }
+              }
+            },
+          );
           return textResult(
             result.removed ? `Removed worktree: ${result.path}` : formatWorktreeStatus(result),
           );
@@ -1603,6 +1665,57 @@ Guidelines:
 
   pi.registerTool(
     defineTool({
+      name: "control_subagent_process",
+      label: "Control Agent Process",
+      description:
+        "Inspect, abort, explicitly take over, or retry result-gated cleanup for the exact displayed RPC run. Session and workspace are retained.",
+      parameters: Type.Object({
+        agent_id: Type.String(),
+        process_id: Type.String(),
+        ownership_revision: Type.Number(),
+        action: Type.Union([
+          Type.Literal("inspect"),
+          Type.Literal("abort"),
+          Type.Literal("manual"),
+          Type.Literal("external"),
+          Type.Literal("cleanup"),
+        ]),
+      }),
+      execute: async (_id, params) => {
+        try {
+          const record = manager.getRecord(params.agent_id);
+          if (
+            !record?.process ||
+            record.process.processId !== params.process_id ||
+            record.process.revision !== params.ownership_revision
+          )
+            throw new Error("PROCESS_IDENTITY_UNPROVEN");
+          const handle = record.process as ProcessHandle;
+          const runner = requireProcessRunner(pi.events);
+          let value = runner.inspect?.(handle);
+          if (!value) throw new Error("PROCESS_IDENTITY_UNPROVEN");
+          if (params.action === "abort") {
+            if (!manager.abort(record.id)) throw new Error("PROCESS_ACTION_REFUSED");
+          } else if (params.action === "manual" || params.action === "external")
+            value = await runner.takeover!(handle, params.action);
+          else if (params.action === "cleanup") {
+            value = await runner.cleanup!(handle);
+            record.resultDelivery = value.delivery;
+            record.status = "completed";
+            pi.events.emit(MANAGED_CHANGED_EVENT, {});
+          }
+          return textResult(JSON.stringify(value, null, 2));
+        } catch (error) {
+          return textResult(
+            `Process action refused: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
       name: "steer_subagent",
       label: "Steer Agent",
       description: "Send a steering message to a running agent.",
@@ -1611,13 +1724,39 @@ Guidelines:
           description: "The agent ID to steer (must be running or waiting for help).",
         }),
         message: Type.String({ description: "The steering message to send." }),
+        process_id: Type.Optional(
+          Type.String({
+            description: "Process ID from the displayed run; stale runs are refused.",
+          }),
+        ),
+        ownership_revision: Type.Optional(
+          Type.Number({ description: "Ownership revision from the displayed run." }),
+        ),
       }),
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         const record = manager.getRecord(params.agent_id);
         const channel = findCommunication(pi.events);
         if (channel && (record?.process || !record)) {
           try {
-            await channel.steer(record?.process?.agentId ?? params.agent_id, params.message);
+            if (
+              record?.process &&
+              ((params.process_id !== undefined &&
+                params.process_id !== record.process.processId) ||
+                (params.ownership_revision !== undefined &&
+                  params.ownership_revision !== record.process.revision))
+            )
+              throw new Error("PROCESS_IDENTITY_UNPROVEN");
+            if (record?.process) {
+              const current = requireProcessRunner(pi.events).inspect?.(
+                record.process as ProcessHandle,
+              );
+              if (current?.ownership !== "managed") throw new Error("PROCESS_OWNERSHIP_CHANGED");
+            }
+            await channel.steer(
+              record?.process?.agentId ?? params.agent_id,
+              params.message,
+              record?.process?.processId,
+            );
             return textResult(
               "Message received by addressed transport; model observation occurs at a safe transition.",
             );

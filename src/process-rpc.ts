@@ -1,3 +1,5 @@
+import type { ProcessDialogRequest, ProcessDialogResponse } from "./process-dialog.ts";
+import { osProcessIdentity } from "./process-os-identity.ts";
 import {
   qualificationTiming,
   validateQualificationPreset,
@@ -59,6 +61,13 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 export interface ProcessRpcOptions {
+  processId?: string;
+  onSpawn?: (process: ProcessRpc) => Promise<void>;
+  beforeMutation?: (
+    action: "steer" | "abort" | "signal" | "cleanup" | "dialog" | "parent-exiting",
+  ) => void;
+  onExit?: (code: string) => void;
+  onDialog?: (request: ProcessDialogRequest, signal: AbortSignal) => Promise<ProcessDialogResponse>;
   executable: string;
   args: string[];
   cwd: string;
@@ -99,8 +108,10 @@ interface Run {
 }
 
 export class ProcessRpc {
-  readonly processId = randomUUID();
+  readonly processId: string;
   readonly pid: number;
+  private readonly osIdentity?: string;
+  private readonly ipcDialogs = new Set<string>();
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly options: ProcessRpcOptions;
   private readonly timing: ReturnType<typeof qualificationTiming>;
@@ -111,6 +122,19 @@ export class ProcessRpc {
   private ready = false;
   private run?: Run;
   private killTimer?: NodeJS.Timeout;
+  private termTimer?: NodeJS.Timeout;
+  private readonly dialogs = new Map<string, AbortController>();
+  private stopping = false;
+  private readonly stopRefused = deferred<void>();
+  get alive(): boolean {
+    return (
+      this.pid > 0 &&
+      this.child.exitCode === null &&
+      this.child.signalCode === null &&
+      !this.closedResolved
+    );
+  }
+  private closedResolved = false;
   private diagnosticCount = 0;
   private readonly diagnosticHistory: InspectionDiagnostic[] = [];
   private readonly diagnosticRequests = new Map<
@@ -160,6 +184,7 @@ export class ProcessRpc {
 
   private constructor(options: ProcessRpcOptions) {
     this.options = options;
+    this.processId = options.processId ?? randomUUID();
     this.timing = qualificationTiming(options.qualificationPreset);
     this.child = spawn(options.executable, options.args, {
       cwd: options.cwd,
@@ -180,6 +205,22 @@ export class ProcessRpc {
           }
           if (Buffer.byteLength(JSON.stringify(message)) > (options.maxFrameBytes ?? 4_194_304))
             throw new ProcessRpcError("CONTROL_FRAME_TOO_LARGE");
+          if (object(message) && message.type === "dialog_request" && object(message.request)) {
+            if (typeof message.request.id !== "string")
+              throw new ProcessRpcError("DIALOG_PROTOCOL_ERROR");
+            this.ipcDialogs.add(message.request.id);
+            this.frame(message.request);
+            return;
+          }
+          if (
+            object(message) &&
+            message.type === "dialog_cancel" &&
+            typeof message.id === "string"
+          ) {
+            this.dialogs.get(message.id)?.abort();
+            this.ipcDialogs.delete(message.id);
+            return;
+          }
           if (!object(message) || message.type !== "inspection" || typeof message.id !== "string")
             throw new ProcessRpcError("CONTROL_PROTOCOL_ERROR");
           const pending = this.pending.get(message.id);
@@ -197,21 +238,29 @@ export class ProcessRpc {
         }
       });
       this.child.send?.({ type: "bootstrap", data: options.bootstrapData }, (error) => {
-        if (error) this.fail("BOOTSTRAP_FAILED");
+        if (error) this.failTransport("BOOTSTRAP_FAILED");
       });
     }
+    this.osIdentity = osProcessIdentity(this.pid);
     this.child.on("error", () => this.fail("SPAWN_FAILED"));
-    this.child.stdin.on("error", () => this.fail("STDIN_FAILED"));
+    this.child.stdin.on("error", () => this.failTransport("STDIN_FAILED"));
     // Drain stderr without retaining, forwarding or persisting credential-bearing diagnostics.
     this.child.stderr.resume();
     this.child.stdout.on("data", (chunk: Buffer) => this.receive(chunk));
     this.child.on("close", (status, signal) => {
+      this.closedResolved = true;
+      if (this.termTimer) clearTimeout(this.termTimer);
       if (this.killTimer) clearTimeout(this.killTimer);
       const diagnostic =
         options.bootstrapData !== undefined && signal === null
           ? readChildFailureExitStatus(status)
           : undefined;
       this.fail(diagnostic?.code ?? "PROCESS_EXITED", diagnostic?.phase);
+      try {
+        options.onExit?.(diagnostic?.code ?? "PROCESS_EXITED");
+      } catch {
+        /* Identity refusal never targets another run. */
+      }
       this.closed.resolve();
     });
   }
@@ -244,6 +293,7 @@ export class ProcessRpc {
       throw new ProcessRpcError("BOOTSTRAP_TOO_LARGE");
     const client = new ProcessRpc(options);
     try {
+      await options.onSpawn?.(client);
       const state = await client.readState(options.startupTimeoutMs, "startup:get_state");
       // Pi retries model failures by default. Never issue any retry from this transport.
       await client.request({ type: "set_auto_retry", enabled: false });
@@ -285,11 +335,68 @@ export class ProcessRpc {
     }
     this.pending.clear();
     this.run?.result.reject(this.failure);
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill("SIGTERM");
-      this.killTimer = setTimeout(() => this.child.kill("SIGKILL"), 1000);
-      this.killTimer.unref();
+    for (const dialog of this.dialogs.values()) dialog.abort();
+    this.dialogs.clear();
+    this.stopOwned();
+  }
+
+  private failTransport(code: string): void {
+    // Pipe loss from an already exited OS child must not mask its fixed exit diagnostic.
+    // A genuinely live original process with a broken pipe still fails immediately.
+    if (this.alive && this.osIdentity && osProcessIdentity(this.pid) === this.osIdentity)
+      this.fail(code);
+  }
+
+  private authorize(
+    action: "steer" | "abort" | "signal" | "cleanup" | "dialog" | "parent-exiting",
+  ): boolean {
+    try {
+      if (this.alive && (!this.osIdentity || osProcessIdentity(this.pid) !== this.osIdentity))
+        throw new ProcessRpcError("PROCESS_IDENTITY_UNPROVEN");
+      this.options.beforeMutation?.(action);
+      return true;
+    } catch (error) {
+      this.emit({
+        type:
+          error instanceof ProcessRpcError && error.code === "PROCESS_OWNERSHIP_CHANGED"
+            ? "process_ownership_changed"
+            : "process_identity_uncertain",
+        action,
+      });
+      return false;
     }
+  }
+  private stopOwned(): void {
+    if (this.stopping || !this.alive) return;
+    if (!this.authorize("abort")) {
+      this.detach();
+      this.stopRefused.resolve();
+      return;
+    }
+    this.stopping = true;
+    // Cooperative cancellation first. No ack barrier may prevent bounded termination.
+    if (this.run)
+      this.child.stdin.write(JSON.stringify({ type: "abort", id: randomUUID() }) + "\n");
+    this.termTimer = setTimeout(() => {
+      if (!this.alive) return;
+      if (!this.authorize("signal")) {
+        this.detach();
+        this.stopRefused.resolve();
+        return;
+      }
+      this.child.kill("SIGTERM");
+      this.killTimer = setTimeout(() => {
+        if (this.alive) {
+          if (this.authorize("signal")) this.child.kill("SIGKILL");
+          else {
+            this.detach();
+            this.stopRefused.resolve();
+          }
+        }
+      }, 1000);
+      this.killTimer.unref();
+    }, 100);
+    this.termTimer.unref();
   }
 
   private receive(chunk: Buffer): void {
@@ -334,6 +441,93 @@ export class ProcessRpc {
       clearTimeout(pending.timer);
       if (!frame.success) pending.result.reject(new ProcessRpcError("COMMAND_REJECTED"));
       else pending.result.resolve((frame as unknown as RpcResponse & { data?: unknown }).data);
+      return;
+    }
+    if (frame.type === "extension_ui_request") {
+      if (["select", "confirm", "input", "editor", "custom"].includes(frame.method as string)) {
+        if (typeof frame.id !== "string" || this.dialogs.has(frame.id) || this.dialogs.size >= 16)
+          throw new ProcessRpcError("DIALOG_PROTOCOL_ERROR");
+        if (!["select", "confirm", "input"].includes(frame.method as string)) {
+          this.emit({
+            type: "process_dialog_unsupported",
+            requestId: frame.id,
+            method: frame.method,
+          });
+          this.fail("CUSTOM_TUI_UNSUPPORTED");
+          return;
+        }
+        if (
+          typeof frame.title !== "string" ||
+          (frame.method === "confirm" && typeof frame.message !== "string") ||
+          (frame.method === "select" &&
+            (!Array.isArray(frame.options) || frame.options.some((v) => typeof v !== "string"))) ||
+          (frame.timeout !== undefined &&
+            (!Number.isSafeInteger(frame.timeout) || (frame.timeout as number) < 1))
+        )
+          throw new ProcessRpcError("DIALOG_PROTOCOL_ERROR");
+        const controller = new AbortController();
+        this.dialogs.set(frame.id, controller);
+        this.emit({
+          type: "process_dialog_pending",
+          request: frame,
+          blocked: !this.options.onDialog,
+        });
+        let timer: NodeJS.Timeout | undefined;
+        if (frame.timeout !== undefined)
+          timer = setTimeout(() => controller.abort(), frame.timeout as number);
+        const finish = () => {
+          if (timer) clearTimeout(timer);
+          this.dialogs.delete(frame.id as string);
+          this.ipcDialogs.delete(frame.id as string);
+          this.emit({ type: "process_dialog_finished", requestId: frame.id });
+        };
+        controller.signal.addEventListener("abort", finish, { once: true });
+        if (this.options.onDialog)
+          void this.options
+            .onDialog(frame as unknown as ProcessDialogRequest, controller.signal)
+            .then(
+              (response) => {
+                if (
+                  controller.signal.aborted ||
+                  this.failure ||
+                  !this.dialogs.has(frame.id as string)
+                )
+                  return;
+                if (
+                  response.id !== frame.id ||
+                  response.type !== "extension_ui_response" ||
+                  !(
+                    ("cancelled" in response && response.cancelled === true) ||
+                    (frame.method === "confirm" &&
+                      "confirmed" in response &&
+                      typeof response.confirmed === "boolean") ||
+                    (frame.method !== "confirm" &&
+                      "value" in response &&
+                      typeof response.value === "string" &&
+                      (frame.method !== "select" ||
+                        (frame.options as string[]).includes(response.value)))
+                  )
+                ) {
+                  this.fail("DIALOG_RESPONSE_INVALID");
+                  return;
+                }
+                if (!this.authorize("dialog")) {
+                  controller.abort();
+                  return;
+                }
+                if (this.ipcDialogs.delete(response.id))
+                  this.child.send?.({ type: "dialog_response", response }, (error) => {
+                    if (error) this.fail("DIALOG_CHANNEL_FAILED");
+                  });
+                else this.child.stdin.write(JSON.stringify(response) + "\n");
+                finish();
+              },
+              () => {
+                if (!controller.signal.aborted) this.fail("DIALOG_CHANNEL_FAILED");
+              },
+            );
+      }
+      this.emit(frame);
       return;
     }
     // Events are delivered synchronously, never queued without a bound.
@@ -564,13 +758,58 @@ export class ProcessRpc {
   }
 
   /** Host reply bypasses a blocked foreground model through Pi's registered command path. */
+  async command(message: string): Promise<void> {
+    if (!/^\/[a-zA-Z0-9_-]+(?: |$)/.test(message) || message.includes("\n"))
+      throw new ProcessRpcError("INVALID_COMMAND");
+    if (!this.authorize("steer")) throw new ProcessRpcError("PROCESS_IDENTITY_UNPROVEN");
+    await this.request({ type: "prompt", message });
+  }
   async replyHelp(requestId: string, message: string): Promise<void> {
     if (!/^[a-zA-Z0-9_-]+$/.test(requestId) || !message.trim())
       throw new ProcessRpcError("INVALID_REPLY");
+    if (!this.authorize("steer")) throw new ProcessRpcError("PROCESS_IDENTITY_UNPROVEN");
     await this.request({ type: "prompt", message: `/agent-reply ${requestId} ${message}` });
   }
   async close(): Promise<void> {
+    if (!this.authorize("cleanup")) {
+      this.detach();
+      return;
+    }
     this.fail("CLOSED");
-    await this.closed.promise;
+    this.stopOwned();
+    let deadline: NodeJS.Timeout | undefined;
+    const bounded = new Promise<void>((resolve, reject) => {
+      deadline = setTimeout(() => {
+        if (this.alive) {
+          reject(new ProcessRpcError("PROCESS_CLEANUP_TIMEOUT"));
+          return;
+        }
+        for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr])
+          stream.destroy();
+        resolve();
+      }, 3000);
+      deadline.unref();
+    });
+    try {
+      await Promise.race([this.closed.promise, this.stopRefused.promise, bounded]);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
+  }
+  /** Release only our transport references after takeover or an identity refusal. */
+  detach(): void {
+    if (this.termTimer) clearTimeout(this.termTimer);
+    if (this.killTimer) clearTimeout(this.killTimer);
+    this.child.unref();
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr])
+      (stream as unknown as { unref?: () => void }).unref?.();
+  }
+  cancelDialogs(): void {
+    for (const controller of this.dialogs.values()) controller.abort();
+    this.dialogs.clear();
+  }
+  parentExiting(): void {
+    if (this.alive && this.authorize("parent-exiting") && this.child.connected)
+      this.child.send?.({ type: "parent_exiting", processId: this.processId }, () => {});
   }
 }

@@ -7,6 +7,7 @@ import {
 /** Private RPC child entrypoint. Uses the public Pi SDK and a private Node IPC bootstrap. */
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   AuthStorage,
   ModelRegistry,
@@ -30,6 +31,9 @@ import type { ChildPolicyBinding } from "./process-boundary.ts";
 import { childFailureExitStatus } from "./process-child-failure.ts";
 import { attachProcessRunner } from "./process-runner.ts";
 import { childSettings } from "./process-settings.ts";
+import { ProcessRegistry, type ProcessHandle } from "./process-lifecycle.ts";
+import { createChildDialogs } from "./process-child-dialog.ts";
+import type { ProcessDialogResponse } from "./process-dialog.ts";
 import { captureProfileResources } from "./process-profile.ts";
 import {
   findCommunication,
@@ -62,9 +66,16 @@ async function boot(data: ProcessBootstrap): Promise<void> {
   const extensions = [...new Set([...paths("extension"), boundary])];
   let inspect!: (trace?: InspectionTrace) => Promise<ChildInspection>;
   let boundaryBound = false;
+  const dialogs = createChildDialogs(
+    (message) => {
+      if (process.connected) process.send?.(message, () => {});
+    },
+    () => ownsCurrentRun(),
+  );
   eventBus.on(CHILD_POLICY_EVENT, (value) => {
     (value as { bind(binding: ChildPolicyBinding): void }).bind({
       tools: profile.tools,
+      dialogs: dialogs.ui,
       verify: async () => {
         await inspect();
       },
@@ -234,7 +245,46 @@ async function boot(data: ProcessBootstrap): Promise<void> {
     resourceLoader: loader,
     diagnostics: [],
   };
-  const runtime = new AgentSessionRuntime(session, services, async () => {
+  const registry = data.hostPolicy
+    ? new ProcessRegistry(join(data.hostPolicy.sessionDirectory, "lifecycle"))
+    : undefined;
+  const ownHandle: ProcessHandle = {
+    taskId: actualBinding?.taskId ?? "unknown",
+    ...profile.identity,
+    sessionFile: profile.session.file,
+    cwd: profile.cwd,
+    pid: process.pid,
+    parentAgentId: profile.parent.agentId,
+    parentSessionId: profile.parent.sessionId,
+    ownership: "managed",
+    revision: 0,
+    routeParentId: profile.parent.agentId,
+  };
+  let keepAlive: NodeJS.Timeout | undefined;
+  const hold = () => {
+    // A disconnected manually owned RPC process retains its saved session and live work.
+    // Reconnection/recovery is deliberately not implemented by this hold.
+    keepAlive ??= setInterval(() => {}, 60_000);
+    return new Promise<never>(() => {});
+  };
+  const ownsCurrentRun = () => {
+    try {
+      return !registry || registry.read(ownHandle, false).ownership === "managed";
+    } catch {
+      return false;
+    }
+  };
+  class BoundChildRuntime extends AgentSessionRuntime {
+    private disposal?: Promise<void>;
+    override async dispose(): Promise<void> {
+      if (!ownsCurrentRun()) return hold();
+      return (this.disposal ??= (async () => {
+        await detach?.();
+        await super.dispose();
+      })());
+    }
+  }
+  const runtime = new BoundChildRuntime(session, services, async () => {
     throw new ProcessProfileError("CHILD_SESSION_REPLACEMENT_FORBIDDEN");
   });
   const detach =
@@ -294,44 +344,121 @@ async function boot(data: ProcessBootstrap): Promise<void> {
   });
   eventBus.on(MANAGED_CHANGED_EVENT, maybePublish);
   let diagnosticCount = 0;
-  process.on("message", (message: { type?: string; id?: string; diagnosticStage?: unknown }) => {
-    if (message.type !== "inspect" || typeof message.id !== "string") return;
-    const stage = message.diagnosticStage;
-    const trace =
-      stage === "startup" || stage === "preprompt"
-        ? new InspectionTrace(stage, (record) => {
-            if (diagnosticCount++ >= diagnosticProcessLimit || !process.connected) return;
-            const frame = { type: "inspection_diagnostic", id: message.id, record };
-            if (Buffer.byteLength(JSON.stringify(frame)) > diagnosticFrameBytes) return;
-            // No awaited flush/ack, and no diagnostic work in the immediate hook-exit path.
-            process.send?.(frame, () => {});
-          })
-        : undefined;
-    const check = trace ? trace.async("inspection", () => inspect(trace)) : inspect();
-    const respond = (success: boolean, proof?: ChildInspection) => {
-      const send = () =>
-        process.send?.({
-          type: "inspection",
-          id: message.id,
-          success,
-          ...(success ? { proof } : {}),
-        });
-      if (trace) trace.sync("return", send);
-      else send();
-    };
-    void check.then(
-      (proof) => respond(true, proof),
-      () => respond(false),
-    );
-  });
+  process.on(
+    "message",
+    (message: {
+      type?: string;
+      id?: string;
+      diagnosticStage?: unknown;
+      processId?: string;
+      response?: ProcessDialogResponse;
+    }) => {
+      if (message.type === "dialog_response" && message.response) {
+        if (ownsCurrentRun()) dialogs.reply(message.response);
+        return;
+      }
+      if (message.type === "parent_exiting") {
+        if (message.processId !== profile.identity.processId) return;
+        try {
+          if (ownsCurrentRun() && registry) {
+            const current = registry.read(ownHandle, false);
+            registry.update(current, {
+              parentState: "parent_exiting",
+              phase: "stopped",
+              error: "PARENT_EXITING",
+            });
+          }
+        } catch {
+          /* Best effort; a changed identity grants no termination authority. */
+        }
+        return;
+      }
+      if (message.type !== "inspect" || typeof message.id !== "string") return;
+      const stage = message.diagnosticStage;
+      const trace =
+        stage === "startup" || stage === "preprompt"
+          ? new InspectionTrace(stage, (record) => {
+              if (diagnosticCount++ >= diagnosticProcessLimit || !process.connected) return;
+              const frame = { type: "inspection_diagnostic", id: message.id, record };
+              if (Buffer.byteLength(JSON.stringify(frame)) > diagnosticFrameBytes) return;
+              // No awaited flush/ack, and no diagnostic work in the immediate hook-exit path.
+              process.send?.(frame, () => {});
+            })
+          : undefined;
+      const check = trace ? trace.async("inspection", () => inspect(trace)) : inspect();
+      const respond = (success: boolean, proof?: ChildInspection) => {
+        const send = () =>
+          process.send?.(
+            {
+              type: "inspection",
+              id: message.id,
+              success,
+              ...(success ? { proof } : {}),
+            },
+            () => {},
+          );
+        if (trace) trace.sync("return", send);
+        else send();
+      };
+      void check.then(
+        (proof) => respond(true, proof),
+        () => respond(false),
+      );
+    },
+  );
   process.on("disconnect", () => {
+    if (!ownsCurrentRun()) {
+      try {
+        const current = registry?.read(ownHandle, false);
+        if (current && current.ownership !== "managed")
+          registry!.update(current, {
+            parentState:
+              current.parentState === "parent_exiting" ? "parent_exiting" : "disconnected",
+            phase: "detached",
+            error:
+              current.parentState === "parent_exiting" ? "PARENT_EXITING" : "PARENT_DISCONNECTED",
+          });
+      } catch {
+        /* Unproven identity leaves the process and evidence untouched. */
+      }
+      void hold();
+      return;
+    }
+    if (registry) {
+      try {
+        const current = registry.read(ownHandle, false);
+        registry.update(current, {
+          parentState: current.parentState === "parent_exiting" ? "parent_exiting" : "disconnected",
+          phase: "stopped",
+          error:
+            current.parentState === "parent_exiting" ? "PARENT_EXITING" : "PARENT_DISCONNECTED",
+        });
+      } catch {
+        void hold();
+        return;
+      }
+    }
+    // A tool can ignore AbortSignal. The same registered run is rechecked at the deadline.
+    const deadline = setTimeout(() => {
+      if (ownsCurrentRun())
+        process.exit(
+          childFailureExitStatus("child:disconnect", { code: "CHILD_IPC_DISCONNECTED" }),
+        );
+      else void hold();
+    }, 1000);
+    deadline.unref();
     void (async () => {
+      await session.abort();
       await detach?.();
       client.close();
       await runtime.dispose();
-    })().finally(() =>
-      process.exit(childFailureExitStatus("child:disconnect", { code: "CHILD_IPC_DISCONNECTED" })),
-    );
+    })().finally(() => {
+      if (ownsCurrentRun())
+        process.exit(
+          childFailureExitStatus("child:disconnect", { code: "CHILD_IPC_DISCONNECTED" }),
+        );
+      else void hold();
+    });
   });
   await runRpcMode(runtime);
 }

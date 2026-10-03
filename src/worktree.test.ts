@@ -99,6 +99,19 @@ async function snapshot(cwd: string) {
   };
 }
 
+test("a changed action identity immediately before Git removal retains the inspected worktree", async (t) => {
+  const cwd = await fixture(t);
+  const worktree = await createWorktree(cwd, "identity-race");
+  const result = await cleanupWorktree(cwd, worktree, () => {
+    throw new Error("PROCESS_IDENTITY_UNPROVEN");
+  });
+  assert.equal(result.removed, false);
+  assert.match(result.worktreeError!, /PROCESS_IDENTITY_UNPROVEN/);
+  assert.equal((await inspectWorktree(worktree)).exists, true);
+  assert.equal(await readFile(join(worktree.path, "tracked"), "utf8"), "initial\n");
+  assert.equal((await cleanupWorktree(cwd, worktree)).removed, true);
+});
+
 test("default HEAD is fixed, detached, registered, retained and explicitly removable", async (t) => {
   const cwd = await fixture(t);
   await writeFile(join(cwd, "tracked"), "staged parent\n");

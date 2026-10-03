@@ -325,9 +325,15 @@ export class AgentWidget {
       const activity = isWaiting
         ? theme.fg(
             "warning",
-            a.resultDelivery && !a.resultDelivery.ingested
-              ? "result delivery pending: parent session write failed"
-              : `waiting for parent: ${a.helpMessage ?? "help requested"}`,
+            a.process?.phase === "question"
+              ? "waiting for human dialog"
+              : a.process?.phase === "detached"
+                ? `owned ${a.process.ownership}: communication detached`
+                : ["cleanup-pending", "cleanup-error"].includes(a.process?.phase ?? "")
+                  ? `result received; ${a.process?.phase}`
+                  : a.resultDelivery && !a.resultDelivery.ingested
+                    ? "result delivery pending: parent session write failed"
+                    : `waiting for parent: ${a.helpMessage ?? "help requested"}`,
           )
         : bg
           ? describeActivity(bg.activeTools, bg.responseText)

@@ -251,7 +251,15 @@ export class LocalMessageClient {
   }
   /** Private host control. Sender identity comes from this authenticated connection. */
   control<T>(
-    operation: "members" | "reserve" | "resume" | "release",
+    operation:
+      | "members"
+      | "reserve"
+      | "resume"
+      | "release"
+      | "register-process"
+      | "bind-process"
+      | "takeover-process"
+      | "check-process",
     input: unknown = null,
   ): Promise<T> {
     this.assertOpen();

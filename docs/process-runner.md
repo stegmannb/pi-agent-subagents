@@ -19,19 +19,19 @@ lockfile and scripts disabled. Sources live under ignored `test-results/` paths.
 No checkout credentials or other worker directories are required. Missing
 sources, failed native initialization, or changed tracked source fail the suite.
 On macOS the named devenv task runs this suite directly. On Linux it builds
-`checks.x86_64-linux.process-protections`, which requires eight runs of the
+`checks.x86_64-linux.process-protections`, which requires nine runs of the
 isolated VM described in [protection-vm.md](protection-vm.md). This requires a
 local or configured remote x86_64-linux Nix builder. The guest includes
 Bubblewrap, socat and ripgrep for actual OS sandbox initialization.
 
-The `process-protections` workflow runs eight mandatory matrix jobs on every
+The `process-protections` workflow runs nine mandatory matrix jobs on every
 push and pull request. Each job builds one suite on the existing runner class
-and has a 45-minute limit for preparation, building and execution. Each VM
-retains its 1200-second limit. `fail-fast: false` lets the other suites finish
+and has a 60-minute limit for preparation, building and execution. Each VM
+retains its 2400-second limit. `fail-fast: false` lets the other suites finish
 if one fails. The independent factory smoke job proves VM infrastructure;
 these consumer suites qualify the actual protection and delegation behavior.
 
-All eight suites use the same immutable `preparedBundle` and unchanged VM
+All nine suites use the same immutable `preparedBundle` and unchanged VM
 factory. Each suffix identifies a `process-protections-<suite>` Nix check,
 matrix job and directory in the local aggregate output:
 
@@ -44,39 +44,41 @@ matrix job and directory in the local aggregate output:
 | `communication-joins` | 4 | SDK review/correction and all three join modes. |
 | `communication-address` | 4 | Foreground help, sibling steering and role-file drift. |
 | `communication-help` | 3 | Background help in all three join modes. |
-| `communication-results` | 6 | Four pending-ingestion cases, shared OS-process budgets and actual SDK session persistence. |
+| `communication-results` | 7 | Four pending-ingestion cases, shared OS-process budgets, actual SDK session persistence and retained first-failure evidence. |
+| `lifecycle` | 24 | Ownership, stale identities, abort/TERM/KILL, dialogs, parent loss and result-gated cleanup retry. |
 
-The local aggregate derivation depends on all eight successful VM outputs and
+The local aggregate derivation depends on all nine successful VM outputs and
 retains their separate service logs and journals. It cannot succeed with a
 missing run. CI's `process-protections` completion job depends on the entire
 matrix and runs even after a failure. It accepts only a matrix result of
 `success`; a failed, cancelled, skipped or missing result cannot pass. That job
-does not rebuild the VMs. Require all eight suite results and the completion
+does not rebuild the VMs. Require all nine suite results and the completion
 job for the same commit. A green completion job alone is not the full evidence.
 
 Each matrix job uploads `process-protections-<suite>-logs`, including the
 streamed build log on failure and the service log and journal when produced.
 Boot errors, unavailable capabilities, failed assertions and timeouts fail the
-affected suite and prevent aggregate success. The split preserves all 27 cases
+affected suite and prevent aggregate success. The split preserves all 28 cases
 exactly once, with their original assertions. Each suite uses the fixture timing
 policy described below.
-The macOS command still runs all 27 cases together. Actual CI timing must be
+The macOS command runs the original 28 and the 24 lifecycle cases together.
+Actual CI timing must be
 measured on its runner; local success does not establish CI runtime. Matrix
 scheduling and preparation can increase total wall time beyond one job's limit.
 
 The VM sets `PASA_PROTECTION_VM=1` only for its test process. The fixtures
 explicitly configure `policy.childStartupTimeoutMs: 120000` and allow the same
 bound for the test Parent's first `get_state` response. They also explicitly
-select `limits.timeoutSeconds: 180` for Child runs under TCG. This finite
+select `limits.timeoutSeconds: 600` for Child runs under TCG. This finite
 functional test allowance includes preprompt checks and nested Child startup;
 it does not pause or restart while a nested reviewer runs.
 Native fixtures and product defaults remain unchanged. The QEMU fixtures also
 select `policy.qualificationPreset: "qemu-functional"` for the fixed 20/40/80-second
 snapshot, inspection and initial-readiness windows described below. Ordinary
 control requests retain their deadlines. Outer waits include startup and run budgets; the
-690-second case bound accounts for Parent startup and two Child incarnations.
-Each Parent prompt retains its 285-second deadline, the Child-done wait remains
-260 seconds, and the VM and CI job limits remain 1200 seconds and 45 minutes.
+2100-second case bound accounts for Parent startup and two Child incarnations.
+Each Parent prompt retains its 900-second deadline, the Child-done wait remains
+900 seconds, and the VM and CI job limits remain 2400 seconds and 60 minutes.
 Parent startup and Child process age at the first model invocation are logged. These measurements
 include TCG overhead and are not native runtime performance claims.
 
@@ -94,7 +96,7 @@ nix build --no-update-lock-file --print-build-logs \
   .#checks.x86_64-linux.process-protections-baseline-ui
 ```
 
-Build the remaining six suite checks on the same source before the final
+Build the remaining seven suite checks on the same source before the final
 aggregate. Preserve each original build log and output directory. A single
 suite or pair is not a complete qualification.
 
@@ -297,7 +299,10 @@ JSONL frames and private IPC bootstrap/inspection messages have a four-MiB size
 limit. Command queues and waits are bounded. Unexpected correlation and invalid
 JSON terminate the process. Stderr is drained without forwarding or retaining
 possibly sensitive diagnostics. Process errors use fixed codes. Closing first
-sends SIGTERM, then SIGKILL after a bounded grace period.
+attempts cooperative abort for active work, then sends SIGTERM and SIGKILL after
+bounded grace periods. Current ownership and process identity are rechecked
+before each action. See [process-lifecycle.md](process-lifecycle.md) for ownership,
+human dialogs and result-gated cleanup.
 
 The private Child encodes fatal boot, input, model, compaction and disconnect
 failures in its numeric exit status. `src/process-child-failure.ts` defines the

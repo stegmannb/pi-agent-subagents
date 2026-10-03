@@ -1,5 +1,5 @@
 /** Built-in child boundary loaded after the captured extensions, through Pi's public API. */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext } from "@mariozechner/pi-coding-agent";
 import { CHILD_POLICY_EVENT } from "./process-contract.ts";
 import type { ChildFailurePhase } from "./process-child-failure.ts";
 export interface ChildPolicyBinding {
@@ -7,8 +7,15 @@ export interface ChildPolicyBinding {
   verify: () => Promise<void>;
   /** Installed only by the private child entrypoint; never accepts a target PID. */
   terminate: (phase: ChildFailurePhase, error: unknown) => never;
+  dialogs?: Pick<ExtensionUIContext, "select" | "confirm" | "input">;
 }
 export default function (pi: ExtensionAPI): void {
+  pi.on("session_start", (_event, ctx) => {
+    if (binding?.dialogs) Object.assign(ctx.ui, binding.dialogs);
+    ctx.ui.custom = async () => {
+      throw new Error("CUSTOM_TUI_UNSUPPORTED");
+    };
+  });
   let binding: ChildPolicyBinding | undefined;
   pi.events.emit(CHILD_POLICY_EVENT, {
     bind: (value: ChildPolicyBinding) => {

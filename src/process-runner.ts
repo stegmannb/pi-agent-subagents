@@ -8,7 +8,17 @@ import { childSettings } from "./process-settings.ts";
 import { SUBAGENT_CONTEXT_TOOL_NAMES } from "./tool-constants.ts";
 import type { GroupBinding } from "./delegation-group.ts";
 import type { ParticipantCredential } from "./messaging-broker.ts";
-import { ProcessCommunication, COMMUNICATION_EVENT } from "./process-communication.ts";
+import {
+  ProcessCommunication,
+  COMMUNICATION_EVENT,
+  PROCESS_DIALOG_EVENT,
+} from "./process-communication.ts";
+import {
+  ProcessRegistry,
+  ProcessIdentityError,
+  type ProcessHandle,
+  type ProcessRegistration,
+} from "./process-lifecycle.ts";
 import { fileURLToPath } from "node:url";
 import { LocalMessageBroker } from "./messaging-broker.ts";
 import { LocalMessageClient } from "./messaging-client.ts";
@@ -29,6 +39,7 @@ import {
   type ProtectionSnapshotLease,
 } from "./protection-adapter.ts";
 import { ProcessRpc, ProcessRpcError } from "./process-rpc.ts";
+import { osProcessIdentity } from "./process-os-identity.ts";
 import {
   reserveProcessSession,
   verifyProcessResources,
@@ -63,6 +74,11 @@ export async function attachProcessRunner(
 ): Promise<() => Promise<void>> {
   const qualificationPreset = validateQualificationPreset(policy.qualificationPreset);
   const childStartupTimeoutMs = policy.childStartupTimeoutMs ?? 10_000;
+  if (
+    policy.humanAnswerChannel !== undefined &&
+    !["interactive", "rpc"].includes(policy.humanAnswerChannel)
+  )
+    throw new ProcessProfileError("INVALID_HUMAN_ANSWER_CHANNEL");
   if (
     !Number.isSafeInteger(childStartupTimeoutMs) ||
     childStartupTimeoutMs < 1 ||
@@ -119,6 +135,7 @@ export async function attachProcessRunner(
       ],
     },
     limits,
+    join(policy.sessionDirectory, "lifecycle"),
   );
   const binding = nested?.binding ?? root!.binding;
   const parentIdentity = {
@@ -137,11 +154,39 @@ export async function attachProcessRunner(
     binding,
     initialParent.session,
     initialParent.eventBus,
+    nested
+      ? () => {
+          const current = registry.read({
+            taskId: binding.taskId!,
+            ...nested.profile.identity,
+            sessionFile: nested.profile.session.file,
+            cwd: nested.profile.cwd,
+            pid: process.pid,
+            parentAgentId: nested.profile.parent.agentId,
+            parentSessionId: nested.profile.parent.sessionId,
+            ownership: "managed",
+            revision: 0,
+            routeParentId: nested.profile.parent.agentId,
+          });
+          if (current.ownership !== "managed") throw new ProcessIdentityError();
+        }
+      : undefined,
   );
   const unbindCommunication = initialParent.eventBus.on(COMMUNICATION_EVENT, (value) => {
     (value as { bind(channel: ProcessCommunication): void }).bind(communication);
   });
   const running = new Set<ProcessRpc>();
+  const registry = new ProcessRegistry(join(policy.sessionDirectory, "lifecycle"));
+  const runs = new Map<
+    string,
+    {
+      handle: ProcessHandle;
+      process?: ProcessRpc;
+      identity: import("./process-results.ts").ResultIdentity;
+      observe: (value: ProcessRegistration) => void;
+      stopping: boolean;
+    }
+  >();
   const busySessions = new Set<string>();
   let disposed = false;
 
@@ -219,6 +264,94 @@ export async function attachProcessRunner(
   }
 
   const runner: ProcessRunner = {
+    inspect(handle) {
+      return registry.read(handle);
+    },
+    async takeover(handle, ownership) {
+      const run = runs.get(handle.processId);
+      if (
+        !run?.process?.alive ||
+        run.process.pid !== handle.pid ||
+        run.process.processId !== handle.processId
+      )
+        throw new ProcessIdentityError();
+      registry.read(handle);
+      const value = await parentClient.control<ProcessRegistration>("takeover-process", {
+        handle,
+        ownership,
+      });
+      // Record, routing and ownership were atomically changed by the authenticated broker.
+      run.handle = value;
+      run.observe(value);
+      run.process.cancelDialogs();
+      return value;
+    },
+    async abort(handle) {
+      const run = runs.get(handle.processId);
+      const current = registry.read(handle);
+      if (
+        !run?.process?.alive ||
+        current.ownership !== "managed" ||
+        run.process.pid !== current.pid ||
+        run.process.processId !== current.processId ||
+        osProcessIdentity(run.process.pid) !== current.osIdentity
+      )
+        throw new ProcessIdentityError();
+      run.stopping = true;
+      const stopped = registry.update(handle, {
+        phase: "stopped",
+        error: "ABORTED",
+        delivery: communication.results.get(run.identity.resultId)?.status,
+      });
+      run.observe(stopped);
+      await run.process.close();
+      if (run.process.alive) throw new ProcessIdentityError();
+      await parentClient.control("release", {
+        agentId: handle.agentId,
+        processId: handle.processId,
+      });
+      running.delete(run.process);
+      busySessions.delete(handle.sessionFile);
+    },
+    async cleanup(handle) {
+      const run = runs.get(handle.processId);
+      const current = registry.read(handle);
+      if (
+        !run?.process ||
+        run.process.pid !== current.pid ||
+        run.process.processId !== current.processId ||
+        (run.process.alive && osProcessIdentity(run.process.pid) !== current.osIdentity) ||
+        current.ownership !== "managed" ||
+        !["cleanup-pending", "cleanup-error", "result-pending"].includes(current.phase)
+      )
+        throw new ProcessIdentityError();
+      try {
+        const delivery = communication.verifyIngested(run.identity);
+        registry.update(handle, { phase: "cleanup-pending", delivery, error: undefined });
+        run.stopping = true;
+        await run.process?.close();
+        if (run.process?.alive) throw new ProcessIdentityError();
+        communication.verifyIngested(run.identity);
+        await parentClient.control("release", {
+          agentId: handle.agentId,
+          processId: handle.processId,
+        });
+        // No await between the fresh identity check and this record mutation.
+        const done = registry.update(handle, { phase: "completed", error: undefined });
+        run.observe(done);
+        if (run.process) running.delete(run.process);
+        busySessions.delete(handle.sessionFile);
+        return done;
+      } catch (error) {
+        run.stopping = false;
+        const failed = registry.update(handle, {
+          phase: "cleanup-error",
+          error: error instanceof ProcessIdentityError ? error.code : "PROCESS_CLEANUP_FAILED",
+        });
+        run.observe(failed);
+        throw error;
+      }
+    },
     async execute(input): Promise<ProcessExecutionResult> {
       if (binding.role.readOnly) throw new ProcessProfileError("ROLE_DELEGATION_FORBIDDEN");
       const cwd = realpathSync(input.cwd);
@@ -302,10 +435,18 @@ export async function attachProcessRunner(
         reserveProcessSession(profile);
         return await run(input, profile, grant, proofs, captured.leases);
       } finally {
-        await parentClient.control("release", {
-          agentId: grant.binding.agentId,
-          processId: grant.binding.processId,
-        });
+        const activeRun = [...runs.values()].find(
+          (r) => r.handle.processId === grant.binding.processId,
+        );
+        if (
+          !activeRun ||
+          (!activeRun.process?.alive &&
+            registry.read(activeRun.handle, false).ownership === "managed")
+        )
+          await parentClient.control("release", {
+            agentId: grant.binding.agentId,
+            processId: grant.binding.processId,
+          });
       }
     },
   };
@@ -321,6 +462,8 @@ export async function attachProcessRunner(
     if (busySessions.has(profile.session.file)) throw new ProcessProfileError("SESSION_BUSY");
     busySessions.add(profile.session.file);
     let process: ProcessRpc | undefined;
+    let registration: ProcessRegistration | undefined;
+    let successful = false;
     try {
       verifyProcessResources(profile);
       verifyProcessSession(profile);
@@ -350,7 +493,85 @@ export async function attachProcessRunner(
       };
       communication.results.expect(resultIdentity);
       input.onIdentity?.(identity);
+      registration = await parentClient.control<ProcessRegistration>("register-process", {
+        ...identity,
+        parentAgentId: parentIdentity.agentId,
+        parentSessionId: parentIdentity.sessionId,
+      });
+      registration = registry.update(registration, {
+        delivery: communication.results.get(resultIdentity.resultId)!.status,
+      });
+      const runRecord = {
+        handle: registration as ProcessHandle,
+        process: undefined as ProcessRpc | undefined,
+        identity: resultIdentity,
+        observe: (value: ProcessRegistration) => input.onIdentity?.(value),
+        stopping: false,
+      };
+      runs.set(identity.processId, runRecord);
+      input.onIdentity?.(registration);
       process = await ProcessRpc.start({
+        processId: incarnation.identity.processId,
+        onSpawn: async (rpc) => {
+          process = rpc;
+          running.add(rpc);
+          runRecord.process = rpc;
+          registration = await parentClient.control<ProcessRegistration>("bind-process", {
+            handle: runRecord.handle,
+            pid: rpc.pid,
+          });
+          runRecord.handle = registration;
+          input.onIdentity?.(registration);
+        },
+        beforeMutation: (action) => {
+          const current = registry.read(runRecord.handle);
+          verifyProcessSession(profile);
+          if (current.ownership !== "managed" && action !== "parent-exiting")
+            throw new ProcessRpcError("PROCESS_OWNERSHIP_CHANGED");
+          if (
+            !runRecord.process ||
+            runRecord.process.pid !== current.pid ||
+            runRecord.process.processId !== current.processId ||
+            getParent().session.sessionId !== current.parentSessionId
+          )
+            throw new ProcessIdentityError();
+        },
+        onExit: (code) => {
+          if (!registration || runRecord.stopping) return;
+          const current = registry.read(runRecord.handle);
+          if (current.ownership !== "managed") return;
+          const value = registry.update(runRecord.handle, {
+            phase: "lost",
+            error: code,
+            delivery: communication.results.get(resultIdentity.resultId)?.status,
+          });
+          input.onIdentity?.(value);
+        },
+        ...(policy.humanAnswerChannel
+          ? {
+              onDialog: (
+                request: import("./process-dialog.ts").ProcessDialogRequest,
+                signal: AbortSignal,
+              ) =>
+                new Promise<import("./process-dialog.ts").ProcessDialogResponse>(
+                  (resolve, reject) => {
+                    if (signal.aborted) {
+                      reject(new Error("DIALOG_CANCELLED"));
+                      return;
+                    }
+                    signal.addEventListener("abort", () => reject(new Error("DIALOG_CANCELLED")), {
+                      once: true,
+                    });
+                    initialParent.eventBus.emit(PROCESS_DIALOG_EVENT, {
+                      request,
+                      signal,
+                      resolve,
+                      reject,
+                    });
+                  },
+                ),
+            }
+          : {}),
         startupTimeoutMs: childStartupTimeoutMs,
         qualificationPreset,
         executable: profile.runtime.node.path,
@@ -387,7 +608,25 @@ export async function attachProcessRunner(
             ].filter((entry, index, all) => all.findIndex((e) => e.path === entry.path) === index),
           },
         },
-        onEvent: input.onEvent,
+        onEvent: (event) => {
+          if (
+            registration &&
+            (event.type === "process_dialog_pending" || event.type === "process_dialog_finished")
+          ) {
+            const current = registry.read(runRecord.handle);
+            if (
+              current.ownership === "managed" &&
+              !runRecord.stopping &&
+              ["starting", "running", "question"].includes(current.phase)
+            ) {
+              const value = registry.update(runRecord.handle, {
+                phase: event.type === "process_dialog_pending" ? "question" : "running",
+              });
+              input.onIdentity?.(value);
+            }
+          }
+          input.onEvent?.(event);
+        },
         onInspectionDiagnostic: policy.onInspectionDiagnostic,
         verifyReady: async (state, pid, evidence) => {
           try {
@@ -440,7 +679,8 @@ export async function attachProcessRunner(
             )
               throw new ProcessProfileError("PARENT_PROTECTION_CHANGED");
             verifyProcessResources(profile);
-            input.onIdentity?.({ ...identity, pid });
+            if (registration) input.onIdentity?.({ ...registry.read(runRecord.handle), pid });
+            else input.onIdentity?.({ ...identity, pid });
           } catch (error) {
             // Keep our fixed validation code, never arbitrary extension error text.
             if (error instanceof ProcessProfileError) throw new ProcessRpcError(error.code);
@@ -449,6 +689,7 @@ export async function attachProcessRunner(
         },
       });
       running.add(process);
+      input.onIdentity?.(registry.update(runRecord.handle, { phase: "running" }));
       const handoffPromise = communication.waitResult(
         resultIdentity,
         profile.limits.timeoutSeconds * 1000,
@@ -460,6 +701,20 @@ export async function attachProcessRunner(
         completion: handoffPromise,
       });
       const handoff = await handoffPromise;
+      input.onIdentity?.(
+        registry.update(runRecord.handle, {
+          phase: handoff.delivery.ingested ? "cleanup-pending" : "result-pending",
+          delivery: handoff.delivery,
+        }),
+      );
+      if (handoff.delivery.ingested) {
+        try {
+          await runner.cleanup!(runRecord.handle);
+        } catch {
+          /* Keep the received result, visible cleanup error and same-run retry handle. */
+        }
+      }
+      successful = true;
       return {
         responseText: JSON.stringify(handoff.result, null, 2),
         delivery: handoff.delivery,
@@ -476,31 +731,85 @@ export async function attachProcessRunner(
               originalLeases,
             );
           } finally {
-            await parentClient.control("release", {
-              agentId: next.binding.agentId,
-              processId: next.binding.processId,
-            });
+            const nextRun = runs.get(next.binding.processId);
+            if (
+              !nextRun ||
+              (!nextRun.process?.alive &&
+                registry.read(nextRun.handle, false).ownership === "managed")
+            )
+              await parentClient.control("release", {
+                agentId: next.binding.agentId,
+                processId: next.binding.processId,
+              });
           }
         },
       };
+    } catch (error) {
+      const held = registration && runs.get(registration.processId);
+      if (held) {
+        try {
+          const current = registry.read(held.handle);
+          if (current.ownership === "managed" && current.phase !== "cleanup-error") {
+            held.stopping = true;
+            const stopped = registry.update(held.handle, {
+              phase:
+                error instanceof ProcessIdentityError
+                  ? "uncertain"
+                  : error instanceof ProcessRpcError && error.code === "PROCESS_EXITED"
+                    ? "lost"
+                    : "stopped",
+              error: error instanceof ProcessRpcError ? error.code : "PROCESS_RUN_FAILED",
+              delivery: communication.results.get(held.identity.resultId)?.status,
+            });
+            input.onIdentity?.(stopped);
+            await process?.close();
+          }
+        } catch {
+          input.onEvent?.({ type: "process_identity_uncertain" });
+          process?.detach();
+        }
+      } else await process?.close();
+      throw error;
     } finally {
-      if (process) {
+      if (process && !successful) {
         running.delete(process);
-        await process.close();
       }
-      busySessions.delete(profile.session.file);
+      if (!successful || !process?.alive) busySessions.delete(profile.session.file);
     }
   }
   const unsubscribe = getParent().eventBus.on(PROCESS_RUNNER_EVENT, (request) => {
     (request as { bind(runner: ProcessRunner): void }).bind(runner);
   });
-  return async () => {
-    disposed = true;
-    unsubscribe();
-    unbindCommunication();
-    communication.close();
-    await Promise.allSettled([...running].map((p) => p.close()));
-    if (!nested) parentClient.close();
-    await broker?.close();
-  };
+  let disposal: Promise<void> | undefined;
+  return () =>
+    (disposal ??= (async () => {
+      disposed = true;
+      unsubscribe();
+      unbindCommunication();
+      for (const run of runs.values()) {
+        try {
+          const current = registry.read(run.handle, false);
+          if (current.phase === "completed" || !run.process?.alive) continue;
+          if (current.ownership !== "managed") {
+            registry.update(current, { parentState: "parent_exiting", error: "PARENT_EXITING" });
+            run.process?.parentExiting();
+            run.process?.detach();
+            continue;
+          }
+          registry.update(run.handle, {
+            parentState: "parent_exiting",
+            phase: "stopped",
+            error: "PARENT_EXITING",
+          });
+          run.stopping = true;
+          run.process?.parentExiting();
+        } catch {
+          run.process?.detach();
+        }
+      }
+      communication.close();
+      await Promise.allSettled([...running].map((p) => p.close()));
+      if (!nested) parentClient.close();
+      await broker?.close();
+    })());
 }

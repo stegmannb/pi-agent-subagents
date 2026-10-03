@@ -115,10 +115,16 @@ export async function createCompanionHost(
         : SessionManager.create(cwd),
     },
   );
+  const dispose = runtime.dispose.bind(runtime);
+  let disposal: Promise<void> | undefined;
+  runtime.dispose = () =>
+    (disposal ??= (async () => {
+      await detach?.();
+      await dispose();
+    })());
   return {
     runtime,
     async close() {
-      await detach?.();
       await runtime.dispose();
     },
   };
@@ -128,11 +134,29 @@ export async function runCompanionHost(
   options: CompanionHostOptions,
   mode: "interactive" | "rpc",
 ): Promise<void> {
-  const host = await createCompanionHost(options);
+  const host = await createCompanionHost({
+    ...options,
+    policy: {
+      ...options.policy,
+      ...(mode === "interactive" ? { humanAnswerChannel: "interactive" as const } : {}),
+    },
+  });
+  let exiting = false;
+  const end = (code: number) => {
+    if (exiting) return;
+    exiting = true;
+    void host.close().finally(() => process.exit(code));
+  };
+  const term = () => end(143);
+  const interrupt = () => end(130);
+  process.on("SIGTERM", term);
+  process.on("SIGINT", interrupt);
   try {
     if (mode === "rpc") await runRpcMode(host.runtime);
     else await new InteractiveMode(host.runtime).run();
   } finally {
+    process.off("SIGTERM", term);
+    process.off("SIGINT", interrupt);
     await host.close();
   }
 }

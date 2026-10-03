@@ -17,6 +17,7 @@ the companion host refuses process execution with `LIVE_PARENT_INVENTORY_UNAVAIL
 | `request_help({message})` | Wait for a correlated direct parent reply. A queued model notification is not a reply. |
 | `reply_agent_message({request_id, message})` | Answer exactly one pending request without running the requesting model. |
 | `/agent-reply REQUEST_ID MESSAGE` | Human/host reply through Pi's command path, including while a foreground `Agent` tool blocks the parent model. The RPC adapter also exposes `replyHelp(requestId, message)`. |
+| `control_subagent_process({agent_id, process_id, ownership_revision, action})` | Inspect, abort, explicitly transfer ownership or retry cleanup for the exact displayed process run. See [process-lifecycle.md](process-lifecycle.md). |
 | `get_subagent_result({agent_id, wait?, verbose?})` | Retrieve the existing task result. A failed parent-session write is explicitly reported as pending delivery. |
 | `report_complete` | Record `summary`, `status`, optional `goal`, `basis`, `findings`, `evidence`, and `blockers`. It does not approve a review or merge and does not bypass outstanding children. |
 
@@ -129,3 +130,7 @@ It does not create a second task or implicitly change the model. Use
 child's changes and checking the review. The [workspace contract](worktrees.md)
 defines dirty-parent, dirty-child, conflict, active-child and ownership refusals.
 Neither transport receipt nor a completion report replaces that decision.
+
+Process fulfillment also does not prove finished cleanup. Inspect the lifecycle
+phase; only `completed` confirms result-gated process cleanup. Pending cleanup
+keeps the task waiting and retains its result for the same-run retry.

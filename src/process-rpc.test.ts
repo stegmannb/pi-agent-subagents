@@ -619,6 +619,8 @@ for (const qualificationPreset of [undefined, "qemu-functional"] as const) {
     await Promise.resolve();
     assert.equal(requestErrors, 0);
     t.mock.timers.tick(1);
+    await Promise.resolve();
+    t.mock.timers.tick(100);
     await refused;
     assert.equal(requestErrors, 1);
     // node:test also fails this test for an unhandled deferred rejection. The
@@ -649,7 +651,9 @@ test("qualification initial readiness may complete just before its eighty-second
   t.mock.timers.tick(79999);
   release();
   const client = await started;
-  await client.close();
+  t.mock.timers.reset();
+  const closing = client.close();
+  await closing;
 });
 test("qualification initial readiness still expires at eighty seconds", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -671,5 +675,7 @@ test("qualification initial readiness still expires at eighty seconds", async (t
   await entered;
   t.mock.timers.tick(79999);
   t.mock.timers.tick(1);
+  // The readiness rejection is consumed asynchronously; leave only OS cleanup on real time.
+  t.mock.timers.reset();
   await refused;
 });
