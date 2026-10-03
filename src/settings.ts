@@ -2,7 +2,17 @@
  * settings.ts — Persistence for operational settings.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { JoinMode } from "./types.ts";
@@ -105,12 +115,33 @@ export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
 
 export function saveSettings(s: SubagentsSettings, cwd: string = process.cwd()): boolean {
   const path = projectPath(cwd);
+  let temporary: string | undefined;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(s, null, 2), "utf-8");
+    let mode: number | undefined;
+    try {
+      mode = statSync(path).mode & 0o777;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    temporary = join(dirname(path), `.subagents-${randomUUID()}.tmp`);
+    writeFileSync(temporary, JSON.stringify(s, null, 2), { encoding: "utf-8", flag: "wx", mode });
+    // Creation applies umask; restore the existing file's mode before publication.
+    if (mode !== undefined) chmodSync(temporary, mode);
+    // Readers can open either complete version, including while the next save writes.
+    renameSync(temporary, path);
+    temporary = undefined;
     return true;
   } catch {
     return false;
+  } finally {
+    if (temporary) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // Best effort after a failed save; the published file is still intact.
+      }
+    }
   }
 }
 

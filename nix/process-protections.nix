@@ -5,6 +5,7 @@ let
     name: files:
     mkProtectionVM {
       name = "process-protections-${name}";
+      captureDiagnostics = name == "nested-review";
       preparedBundle = inputs.preparedBundle;
       command = [
         "env"

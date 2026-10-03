@@ -31,9 +31,11 @@ retains its 2400-second limit. `fail-fast: false` lets the other suites finish
 if one fails. The independent factory smoke job proves VM infrastructure;
 these consumer suites qualify the actual protection and delegation behavior.
 
-All nine suites use the same immutable `preparedBundle` and unchanged VM
-factory. Each suffix identifies a `process-protections-<suite>` Nix check,
-matrix job and directory in the local aggregate output:
+All nine suites use the same immutable `preparedBundle` and VM isolation
+settings. Nested-review also exports test-only process, fixture and core
+diagnostics as described in [protection-vm.md](protection-vm.md). Each suffix
+identifies a `process-protections-<suite>` Nix check, matrix job and directory
+in the local aggregate output:
 
 | Suite | Cases | Required behavior |
 | --- | --- | --- |

@@ -8,6 +8,7 @@
   memorySize ? 4096,
   diskSize ? 8192,
   cores ? 2,
+  captureDiagnostics ? false,
 }:
 assert lib.assertMsg pkgs.stdenv.hostPlatform.isLinux "protection-vm requires Linux pkgs";
 assert lib.assertMsg (
@@ -111,21 +112,38 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import os
+    import runpy
     from pathlib import Path
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("test $(id -u test) -eq 1000")
+    if ${if captureDiagnostics then "True" else "False"}:
+        machine.succeed("bash ${bundle}/tests/process/observe-guest.sh /root/pasa-diagnostics > /root/pasa-observer.log 2>&1 < /dev/null & echo $! > /root/pasa-observer.pid")
+    failed = True
     try:
         machine.succeed("systemctl start protection-test.service", timeout=${toString timeoutSeconds})
         machine.succeed("test $(systemctl show -p ExecMainStatus --value protection-test.service) -eq 0")
+        failed = False
     finally:
-        _, output = machine.execute("journalctl -u protection-test.service --no-pager -o cat", timeout=30)
-        print(output)
-        Path(os.environ["out"], "protection-test.log").write_text(output)
-        _, journal = machine.execute("journalctl -u protection-test.service --no-pager", timeout=30)
-        print(journal)
-        Path(os.environ["out"], "protection-test-journal.log").write_text(journal)
+        export_errors = []
+        for filename, format in [("protection-test.log", "cat"), ("protection-test-journal.log", "short")]:
+            try:
+                _, journal = machine.execute("journalctl -u protection-test.service --no-pager -o " + format, timeout=30)
+                print(journal)
+                Path(os.environ["out"], filename).write_text(journal)
+            except Exception as journal_error:
+                export_errors.append(str(journal_error))
+        if ${if captureDiagnostics then "True" else "False"}:
+            try:
+                collector = runpy.run_path("${./collect-protection-diagnostics.py}")["collect"]
+                collector(machine, os.environ["out"], "${pkgs.nodejs_22}/bin/node", "${pkgs.systemd}", "${pkgs.gdb}/bin/gdb", "${pkgs.zstd}/bin/zstd", failed)
+            except Exception as diagnostic_error:
+                export_errors.append(str(diagnostic_error))
+        if export_errors:
+            print("PASA_DIAGNOSTIC_EXPORT_FAILED: " + repr(export_errors), flush=True)
+            if not failed:
+                raise RuntimeError("required test artifact export failed")
     # Guest OS shutdown is not under test. End only this disposable QEMU after
     # successful assertions and persisted logs; crash() waits for its exit.
     machine.crash()

@@ -41,6 +41,7 @@ input supplied by this factory. A flake consumer can instead call
 | `memorySize` | Guest RAM in MiB, default 4096. |
 | `diskSize` | Writable guest disk in MiB, default 8192, separate from the read-only store image. Must fit the copied bundle and test output. |
 | `cores` | Guest virtual CPUs, default 2. |
+| `captureDiagnostics` | Optional test-only observation and artifact export, default `false`. The prepared bundle must contain `tests/process/observe-guest.sh` when enabled. |
 
 The guest already provides Node 22, Bash, Git, coreutils, GNU tar, gzip,
 Bubblewrap, socat and ripgrep. The bundle owner must prepare and verify the
@@ -99,6 +100,24 @@ The Nix build log retains console output if the guest hangs or boot fails.
 Successful outputs contain these two journal extracts; driver and serial
 output remains in the streamed build log. Failed Nix outputs are not published
 as successful store results.
+
+The nested-review consumer enables `captureDiagnostics`. A driver-owned observer
+samples Node PID, command line, status, start identity and memory maps from
+`/proc` once per second. The fixture records its Parent PID before readiness
+and retains its test directory until export, including host configuration,
+stderr, model trace and session files. Node arguments, service environment,
+Guard, OS Sandbox, assertions, resource limits and deadlines are unchanged.
+
+Before cleanup, the driver exports the fixture, guest journal, systemd core
+metadata and any normally stored Node cores over the existing VM control
+channel. GDB and zstd analyze cores in the build sandbox; they add no guest
+runtime configuration. Successful outputs include `diagnostics.tar.gz`.
+For a failed assertion, numbered `PASA_DIAGNOSTIC_DATA` blocks and the archive's
+SHA256 are also streamed into the build log, since failed outputs cannot be
+published. The original assertion still fails. Artifact-export failure also
+fails a previously passing run; it cannot hide or replace an existing test
+failure. A successful later run does not establish the cause of an earlier
+process crash.
 
 ## Smoke check and CI
 

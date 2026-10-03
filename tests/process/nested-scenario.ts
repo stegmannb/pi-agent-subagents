@@ -29,6 +29,8 @@ export async function nestedScenario(
     | "role-continuation",
 ): Promise<void> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "pasa-nested-")));
+  const diagnosticFixture =
+    protectedHost && protectionVM && joinMode === undefined && scenario === undefined;
   const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const cwd = join(root, "repo"),
     agentDir = join(root, "agent"),
@@ -171,6 +173,30 @@ export async function nestedScenario(
         PI_OFFLINE: "1",
         PI_SKIP_VERSION_CHECK: "1",
       },
+      onSpawn: diagnosticFixture
+        ? async (spawned: ProcessRpc) => {
+            const observations = await Promise.all(
+              ["stat", "status", "cmdline", "maps"].map(async (field) => [
+                field,
+                await readFile(`/proc/${spawned.pid}/${field}`, "utf8").catch(() => null),
+              ]),
+            );
+            await writeFile(
+              join(root, "parent-process.json"),
+              JSON.stringify(
+                {
+                  pid: spawned.pid,
+                  expectedNode: process.execPath,
+                  stage: "spawn-before-readiness",
+                  observedAt: new Date().toISOString(),
+                  proc: Object.fromEntries(observations),
+                },
+                null,
+                2,
+              ),
+            );
+          }
+        : undefined,
       verifyReady: async (state: any) => {
         assert.equal(state.model.provider, "role-test");
       },
@@ -547,6 +573,6 @@ export async function nestedScenario(
     await client?.close();
     if (protectedHost) await inspectionJournal(join(root, "stderr.log"));
     // Preserve failures for diagnosis without changing the scenario or its budgets.
-    if (succeeded) await rm(root, { recursive: true, force: true });
+    if (succeeded && !diagnosticFixture) await rm(root, { recursive: true, force: true });
   }
 }
