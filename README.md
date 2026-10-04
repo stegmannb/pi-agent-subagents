@@ -123,3 +123,8 @@ without that host refuses RPC selection because Pi 0.73.0 does not expose the
 full live resource inventory to extensions.
 Task processes can delegate independent read-only reviewers through the same host.
 The shared default limit is four running children and two levels below the root.
+
+The [generic Taskflow qualification](docs/taskflow-qualification.md) runs real Pi
+review, correlated help, result ingestion and owned cleanup without external
+inference or Herdr. Use `pnpm run test:qualification` or the matching devenv task.
+It includes a separate required Linux VM check and does not deploy a workflow.

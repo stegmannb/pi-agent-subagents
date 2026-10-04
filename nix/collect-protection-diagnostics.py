@@ -49,7 +49,8 @@ def collect(machine, output, node, systemd, gdb, zstd, failed):
                         "test ! -f \"$core\" || cp -- \"$core\" /root/pasa-diagnostics/cores/ || exit; done")
     if status:
         raise RuntimeError("stored core diagnostic copy failed")
-    status, _ = execute("find /tmp -maxdepth 1 -type d -name 'pasa-nested-*' -printf '%f\\0' | "
+    status, _ = execute("find /tmp -maxdepth 1 -type d "
+                        "\\( -name 'pasa-nested-*' -o -name 'pasa-life-host-*' \\) -printf '%f\\0' | "
                         "tar -C /tmp --null -T - -czf /root/pasa-diagnostics/fixtures.tar.gz")
     if status:
         raise RuntimeError("fixture diagnostic export failed")

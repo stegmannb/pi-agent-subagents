@@ -5,7 +5,10 @@ let
     name: files:
     mkProtectionVM {
       name = "process-protections-${name}";
-      captureDiagnostics = name == "nested-review";
+      captureDiagnostics = builtins.elem name [
+        "nested-review"
+        "taskflow-qualification"
+      ];
       preparedBundle = inputs.preparedBundle;
       command = [
         "env"
@@ -29,6 +32,12 @@ let
       timeoutSeconds = 2400;
     };
   suites = {
+    taskflow-qualification = run "taskflow-qualification" [
+      "tests/process/qualification-real.test.ts"
+      "tests/process/qualification-lifecycle-real.test.ts"
+      "tests/process/delegation-results-real.test.ts"
+      "tests/process/result-persistence-real.test.ts"
+    ];
     lifecycle = run "lifecycle" [
       "src/process-lifecycle.test.ts"
       "tests/process/lifecycle-rpc-real.test.ts"

@@ -95,6 +95,18 @@
       showOutput = true;
     };
 
+    "test:qualification" = {
+      description = "Qualify nested review, event-driven joins, persistent results and owned cleanup with real Pi processes.";
+      after = [ "deps:install" ];
+      before = [ "devenv:enterTest" ];
+      exec =
+        if pkgs.stdenv.isLinux then
+          "nix build --no-update-lock-file --print-build-logs .#checks.x86_64-linux.process-protections-taskflow-qualification"
+        else
+          "pnpm run test:qualification";
+      showOutput = true;
+    };
+
     "test:process:tui" = {
       description = "Run the interactive companion-host RPC test.";
       after = [ "deps:install" ];
