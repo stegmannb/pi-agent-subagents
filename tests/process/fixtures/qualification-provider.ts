@@ -12,20 +12,21 @@ export default function (pi: ExtensionAPI): void {
       join(directory, "trace.jsonl"),
       JSON.stringify({ pid: process.pid, ...event }) + "\n",
     );
-  const waitForRelease = () =>
+  const waitForMarkers = (...names: string[]) =>
     new Promise<void>((resolve) => {
-      const release = join(directory, "review-release");
+      const ready = () => names.every((name) => existsSync(join(directory, name)));
       const watcher = watch(directory, () => {
-        if (existsSync(release)) {
+        if (ready()) {
           watcher.close();
           resolve();
         }
       });
-      if (existsSync(release)) {
+      if (ready()) {
         watcher.close();
         resolve();
       }
     });
+  const waitForRelease = () => waitForMarkers("review-release");
   pi.on("session_start", async (_, ctx) => {
     writeFileSync(
       join(directory, `${process.pid}-session.json`),
@@ -67,6 +68,10 @@ export default function (pi: ExtensionAPI): void {
     }
   });
   pi.on("tool_call", async (event) => {
+    // The finite correlated request starts only after descendant startup and
+    // the task's actual ended turn. No request deadline covers fixture warmup.
+    if (event.toolName === "request_help")
+      await waitForMarkers("review-ready", "task-turn-ended.json");
     if (event.toolName === "reply_agent_message") {
       const channel = findCommunication(pi.events)!;
       writeFileSync(
@@ -86,6 +91,13 @@ export default function (pi: ExtensionAPI): void {
   let kind = "root";
   let helpId: string | undefined;
   let helpStage = "idle";
+  pi.on("agent_end", (_, ctx) => {
+    if (kind === "task" && helpStage === "idle")
+      writeFileSync(
+        join(directory, "task-turn-ended.json"),
+        JSON.stringify({ pid: process.pid, sessionId: ctx.sessionManager.getSessionId() }),
+      );
+  });
   const collected = new Set<string>();
   let corrected = false;
   pi.registerProvider("qualification-test", {

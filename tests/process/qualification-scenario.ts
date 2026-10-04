@@ -207,6 +207,9 @@ export async function qualificationScenario(
     )!;
     assert.ok(task);
     const taskEntries = await jsonl(task.sessionFile);
+    const taskTurnEnded = JSON.parse(await readFile(join(root, "task-turn-ended.json"), "utf8"));
+    assert.equal(taskTurnEnded.pid, task.pid);
+    assert.equal(taskTurnEnded.sessionId, task.sessionId);
     const results = taskEntries.filter((entry) => entry.customType === "pasa:result");
     assert.equal(results.length, 2);
     const tool = (name: string) => taskEntries.filter((entry) => entry.message?.toolName === name);

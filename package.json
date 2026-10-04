@@ -29,7 +29,7 @@
     "fmt": "oxfmt src/ tests/ index.ts",
     "lint": "oxlint src/ tests/ index.ts",
     "check": "tsc --noEmit",
-    "test": "node --test src/*.test.ts",
+    "test": "node --test src/*.test.ts tests/process/qualification-provider.test.ts",
     "test:tui": "node --experimental-strip-types --test --test-concurrency=1 tests/tui/*.test.ts",
     "test:tui:repeat": "node tests/tui/repeat.mjs",
     "ci:fmt": "oxfmt --check src/ tests/ index.ts",
