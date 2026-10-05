@@ -129,19 +129,23 @@ test(
         assert.match(JSON.stringify(refusal.content), /requires a working-changes snapshot/);
       }
       for (const [selection, expected] of [
-        [{ isolation: undefined, worktree_snapshot: {} }, /worktree_snapshot requires isolation/],
+        [{ isolation: undefined, worktree_snapshot: {} }, [/worktree_snapshot requires isolation/]],
         [
           { worktree_base: "HEAD", worktree_snapshot: {} },
-          /worktree_base and worktree_snapshot are mutually exclusive/,
+          [/worktree_base and worktree_snapshot are mutually exclusive/],
         ],
         [
           { resume: "unknown", worktree_snapshot: {} },
-          /worktree_snapshot cannot be combined with resume/,
+          [/worktree_snapshot cannot be combined with resume/],
+        ],
+        [
+          { resume: "unknown", worktree_base: "HEAD", worktree_snapshot: {} },
+          [/mutually exclusive/, /cannot be combined with resume/],
         ],
       ] as const) {
         const result = await agent(selection);
         assert.equal(result.isError, true, JSON.stringify(result));
-        assert.match(JSON.stringify(result.content), expected);
+        for (const pattern of expected) assert.match(JSON.stringify(result.content), pattern);
       }
       const result = await agent({ worktree_snapshot: { untracked_paths: ["selected.txt"] } });
       assert.equal(result.details?.status, "completed", JSON.stringify(result));
