@@ -6,9 +6,12 @@ let
   packageJson = builtins.fromJSON (builtins.readFile ../package.json);
   # pi supplies its host packages (pi-ai, pi-coding-agent, pi-tui, typebox) to
   # extensions at runtime through its virtual module map, so the extension must
-  # not bundle them. Anything left in `dependencies` would be a genuine runtime
-  # dependency that this build does not install.
-  runtimeDependencies = builtins.attrNames (packageJson.dependencies or { });
+  # not bundle them. Anything left in `dependencies` or `optionalDependencies`
+  # would be a genuine runtime dependency that this build does not install.
+  runtimeDependencies = lib.unique (
+    lib.attrNames (packageJson.dependencies or { })
+    ++ lib.attrNames (packageJson.optionalDependencies or { })
+  );
 in
 assert lib.assertMsg (runtimeDependencies == [ ]) ''
   pi-agent-subagents declares runtime dependencies: ${lib.concatStringsSep ", " runtimeDependencies}.
