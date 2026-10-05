@@ -21,6 +21,7 @@ import type {
 } from "./types.ts";
 import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
+import { worktreeSelectionError } from "./worktree-selection.ts";
 import {
   createWorktree,
   createSnapshotWorktree,
@@ -142,11 +143,12 @@ export class AgentManager {
         throw new Error("ROLE_DELEGATION_FORBIDDEN");
       options = { ...options, runner: "rpc" };
     }
-    if (
-      options.worktreeSnapshot &&
-      (options.isolation !== "worktree" || options.worktreeBase !== undefined)
-    )
-      throw new Error("worktree_snapshot requires isolation: worktree without worktree_base.");
+    const selectionError = worktreeSelectionError({
+      isolation: options.isolation,
+      worktree_base: options.worktreeBase,
+      worktree_snapshot: options.worktreeSnapshot,
+    });
+    if (selectionError) throw new Error(selectionError);
     if (options.runner === "rpc") requireProcessRunner(pi.events);
     const id = randomUUID().slice(0, 17);
     const abortController = new AbortController();
