@@ -30,6 +30,7 @@ jobs:
             pnpm run ci:fmt
             pnpm run ci:lint
             pnpm run ci:check
+            pnpm run test:mirror
             pnpm test
             pnpm run test:tui
             pnpm run test:process
