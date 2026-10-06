@@ -73,6 +73,19 @@ test("copies release branches from either side and excludes development branches
   assert.throws(() => f.ref(f.right, "refs/heads/private/development"));
 });
 
+test("synchronizes correctly from an Actions-style shallow checkout", (t) => {
+  const f = fixture(t);
+  const next = f.commit("source update after shallow boundary");
+  f.git(["push", "forgejo", "main"]);
+  const shallow = join(f.work, "shallow");
+  f.git(["clone", "--depth=1", "--origin=forgejo", `file://${f.left}`, shallow]);
+  f.git(["remote", "add", "github", f.right], shallow);
+  assert.equal(f.git(["rev-parse", "--is-shallow-repository"], shallow), "true");
+  const result = spawnSync(process.execPath, [script], { cwd: shallow, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.ref(f.right, "refs/heads/main"), next);
+});
+
 test("propagates a previously synchronized deletion in each direction", (t) => {
   const f = fixture(t);
   f.git(["push", "forgejo", "main:release/delete-left", "main:release/delete-right"]);

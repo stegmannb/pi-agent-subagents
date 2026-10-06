@@ -47,6 +47,7 @@ function fetchRefs(remote, config) {
   const prefix = `refs/mirror-fetch/${remote}/`;
   git([
     "fetch",
+    ...(git(["rev-parse", "--is-shallow-repository"]) === "true" ? ["--unshallow"] : []),
     "--quiet",
     "--no-tags",
     "--prune",
