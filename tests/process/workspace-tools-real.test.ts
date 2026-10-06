@@ -72,6 +72,7 @@ test(
     const outcomes: Array<{
       tool: string;
       result: { content: Array<{ text?: string }>; details?: any };
+      isError: boolean;
     }> = [];
     let client: ProcessRpc | undefined;
     try {
@@ -93,7 +94,7 @@ test(
         onEvent: (event) => {
           const e = event as any;
           if (e.type === "tool_execution_end")
-            outcomes.push({ tool: e.toolName, result: e.result });
+            outcomes.push({ tool: e.toolName, result: e.result, isError: e.isError });
         },
       });
       const invoke = async (name: string, args: Record<string, unknown>) => {
@@ -104,7 +105,7 @@ test(
         });
         const events = outcomes.slice(before).filter((e) => e.tool === name);
         assert.equal(events.length, 1, JSON.stringify(outcomes.slice(before)));
-        return events[0].result;
+        return { ...events[0].result, isError: events[0].isError };
       };
       const agent = (args: Record<string, unknown> = {}) =>
         invoke("Agent", {
@@ -127,13 +128,24 @@ test(
         });
         assert.match(JSON.stringify(refusal.content), /requires a working-changes snapshot/);
       }
-      for (const invalid of [
-        { isolation: undefined, worktree_snapshot: {} },
-        { worktree_base: "HEAD", worktree_snapshot: {} },
-        { resume: "unknown", worktree_snapshot: {} },
-      ]) {
-        const result = await agent(invalid);
-        assert.match(JSON.stringify(result.content), /worktree_snapshot requires a new Agent/);
+      for (const [selection, expected] of [
+        [{ isolation: undefined, worktree_snapshot: {} }, [/worktree_snapshot requires isolation/]],
+        [
+          { worktree_base: "HEAD", worktree_snapshot: {} },
+          [/worktree_base and worktree_snapshot are mutually exclusive/],
+        ],
+        [
+          { resume: "unknown", worktree_snapshot: {} },
+          [/worktree_snapshot cannot be combined with resume/],
+        ],
+        [
+          { resume: "unknown", worktree_base: "HEAD", worktree_snapshot: {} },
+          [/mutually exclusive/, /cannot be combined with resume/],
+        ],
+      ] as const) {
+        const result = await agent(selection);
+        assert.equal(result.isError, true, JSON.stringify(result));
+        for (const pattern of expected) assert.match(JSON.stringify(result.content), pattern);
       }
       const result = await agent({ worktree_snapshot: { untracked_paths: ["selected.txt"] } });
       assert.equal(result.details?.status, "completed", JSON.stringify(result));

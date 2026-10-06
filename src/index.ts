@@ -22,7 +22,8 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { AgentManager } from "./agent-manager.ts";
+import { AgentManager, agentFailureReason } from "./agent-manager.ts";
+import { plainAgentErrorText } from "./agent-error-text.ts";
 import {
   getAgentConversation,
   agentContext,
@@ -98,6 +99,7 @@ import {
   loadWorktree,
   type WorktreeStatus,
 } from "./worktree.ts";
+import { worktreeSelectionError } from "./worktree-selection.ts";
 
 // ---- Helpers ----
 
@@ -774,6 +776,16 @@ export default function (pi: ExtensionAPI) {
     widget.onTurnStart();
   });
 
+  // A foreground agent whose run failed resolves with status "error" instead of
+  // rejecting, so its result needs this marker to reach the model as a failed call.
+  // The status check keeps the structured details, which a throw would discard.
+  pi.on("tool_result", (event) => {
+    if (event.toolName !== "Agent") return;
+    const details = event.details as { status?: string } | undefined;
+    if (details?.status !== "error") return;
+    return { isError: true };
+  });
+
   // ---- Settings ----
 
   // ---- Type list ----
@@ -827,8 +839,8 @@ Guidelines:
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Set cwd to the git repository the agent should work in whenever the parent session cwd is a workspace, a parent folder, or otherwise not that repository. Workspace folders with nested repos are common.
 - Use isolation: worktree whenever cwd is a git repository with at least one commit. Do not omit it just because the task is read-only.
-- Omit isolation only when cwd is not a git repo, has no commits, or the agent must act in the live checkout. Isolated worktrees start from committed HEAD unless worktree_base specifies an existing ref. Use worktree_snapshot for staged/unstaged changes and explicitly selected new files. Worktrees remain until explicit cleanup.
-- Invalid isolation/cwd combinations fail. Do not retry the same call; fix cwd or omit isolation.
+- Omit isolation only when cwd is not a git repo, has no commits, or the agent must act in the live checkout. An isolated worktree starts from committed HEAD. worktree_base and worktree_snapshot are alternative selections for that base and are mutually exclusive: pass at most one, never both. Use worktree_snapshot for staged/unstaged changes and explicitly selected new files. Worktrees remain until explicit cleanup.
+- Invalid arguments fail the Agent call with an error naming the offending parameters. Do not repeat the same call: read the message, correct the arguments, then retry at most once.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
 - Use timeout_seconds to bound wall-clock runtime for agents that might hang or run too long; the agent is aborted once the limit is reached, independent of turn count.`,
       parameters: Type.Object({
@@ -883,7 +895,7 @@ Guidelines:
         worktree_base: Type.Optional(
           Type.String({
             description:
-              "Existing branch, tag or commit for worktree isolation. Resolved to a fixed commit before creation. Default: HEAD. Requires isolation: worktree.",
+              'Existing branch, tag or commit for worktree isolation. Resolved to a fixed commit before creation. Default: HEAD. Requires isolation: "worktree" and cannot be combined with worktree_snapshot or resume.',
           }),
         ),
         worktree_snapshot: Type.Optional(
@@ -903,14 +915,14 @@ Guidelines:
             },
             {
               description:
-                "Explicit working-changes snapshot, including staged and unstaged tracked content. Requires a new worktree without worktree_base. Empty object selects no untracked files. Parent branch, index and files remain unchanged.",
+                'Explicit working-changes snapshot, including staged and unstaged tracked content. Alternative to worktree_base, never a pair: pass at most one worktree selection. Requires isolation: "worktree" and cannot be combined with worktree_base or resume. Pass {} to snapshot tracked working changes and select no untracked files. Parent branch, index and files remain unchanged.',
             },
           ),
         ),
         isolation: Type.Optional(
           Type.Literal("worktree", {
             description:
-              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a retained worktree from HEAD, worktree_base or explicit worktree_snapshot. Omit only if cwd is not a git repo, has no commits, or the agent must act in the live checkout.',
+              'Set to "worktree" whenever cwd is a git repository with at least one commit. Creates a retained worktree from committed HEAD, or from exactly one of worktree_base and worktree_snapshot. Omit only if cwd is not a git repo, has no commits, or the agent must act in the live checkout.',
           }),
         ),
       }),
@@ -927,8 +939,10 @@ Guidelines:
         );
       },
 
-      renderResult(result, { expanded, isPartial }, theme) {
+      renderResult(result, { expanded, isPartial }, theme, context) {
         const details = result.details as AgentDetails | undefined;
+        const plainError = plainAgentErrorText(result.content, details, context.isError);
+        if (plainError) return new Text(theme.fg("error", plainError), 0, 0);
         if (!details) {
           const text = result.content[0]?.type === "text" ? result.content[0].text : "";
           return new Text(text, 0, 0);
@@ -1029,8 +1043,8 @@ Guidelines:
         const customConfig = getAgentConfig(subagentType);
 
         if (params.thinking && !VALID_THINKING_LEVELS.has(params.thinking)) {
-          return textResult(
-            `Invalid thinking level "${params.thinking}". Allowed: ${[...VALID_THINKING_LEVELS].join(", ")}.`,
+          throw new Error(
+            `Agent call rejected: invalid thinking level "${params.thinking}". Allowed: ${[...VALID_THINKING_LEVELS].join(", ")}. Correct the arguments and retry.`,
           );
         }
 
@@ -1047,7 +1061,8 @@ Guidelines:
         if (resolvedConfig.modelInput) {
           const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
           if (typeof resolvedModel === "string") {
-            if (resolvedConfig.modelFromParams) return textResult(resolvedModel);
+            if (resolvedConfig.modelFromParams)
+              throw new Error(`Agent call rejected: ${resolvedModel}`);
           } else {
             model = resolvedModel;
           }
@@ -1058,17 +1073,13 @@ Guidelines:
         const runInBackground = resolvedConfig.runInBackground;
         const isolated = resolvedConfig.isolated;
         const isolation = resolvedConfig.isolation;
-        if (params.worktree_base !== undefined && (isolation !== "worktree" || params.resume)) {
-          return textResult("worktree_base requires a new Agent with isolation: worktree.");
-        }
-        if (
-          params.worktree_snapshot !== undefined &&
-          (isolation !== "worktree" || params.resume || params.worktree_base !== undefined)
-        ) {
-          return textResult(
-            "worktree_snapshot requires a new Agent with isolation: worktree and no worktree_base.",
-          );
-        }
+        const selectionError = worktreeSelectionError({
+          isolation,
+          resume: params.resume,
+          worktree_base: params.worktree_base,
+          worktree_snapshot: params.worktree_snapshot,
+        });
+        if (selectionError) throw new Error(selectionError);
         const worktreeSnapshot =
           params.worktree_snapshot === undefined
             ? undefined
@@ -1079,11 +1090,13 @@ Guidelines:
         const agentCwd = resolveAgentCwd(ctx.cwd, params.cwd);
         if (!params.resume) {
           try {
-            if (!statSync(agentCwd).isDirectory()) {
-              return textResult(`Agent cwd is not a directory: ${agentCwd}`);
-            }
-          } catch {
-            return textResult(`Agent cwd does not exist or is not accessible: ${agentCwd}`);
+            if (!statSync(agentCwd).isDirectory())
+              throw new Error(`Agent call rejected: cwd is not a directory: ${agentCwd}`);
+          } catch (err) {
+            if (err instanceof Error && err.message.startsWith("Agent call rejected")) throw err;
+            throw new Error(
+              `Agent call rejected: cwd does not exist or is not accessible: ${agentCwd}`,
+            );
           }
         }
 
@@ -1124,11 +1137,15 @@ Guidelines:
         // Resume
         if (params.resume) {
           const existing = manager.getRecord(params.resume);
-          if (!existing) return textResult(`Agent not found: "${params.resume}".`);
+          if (!existing)
+            throw new Error(`Agent call rejected: agent not found: "${params.resume}".`);
           if (!existing.session && !existing.process)
-            return textResult(`Agent "${params.resume}" has no active session to resume.`);
+            throw new Error(
+              `Agent call rejected: agent "${params.resume}" has no active session to resume.`,
+            );
           const record = await manager.resume(params.resume, params.prompt, signal);
-          if (!record) return textResult(`Failed to resume agent "${params.resume}".`);
+          if (!record)
+            throw new Error(`Agent call rejected: failed to resume agent "${params.resume}".`);
           if (record.resultDelivery && !record.resultDelivery.ingested)
             return textResult(
               `Result delivery pending: ${JSON.stringify(record.resultDelivery)}\n${record.result ?? ""}`,
@@ -1174,7 +1191,8 @@ Guidelines:
               ...bgCallbacks,
             });
           } catch (err) {
-            return textResult(err instanceof Error ? err.message : String(err));
+            // throw: a text result is reported to the model as a successful call
+            throw err instanceof Error ? err : new Error(String(err));
           }
 
           const joinMode = resolveJoinMode(defaultJoinMode, true);
@@ -1294,7 +1312,7 @@ Guidelines:
           });
         } catch (err) {
           clearInterval(spinnerInterval);
-          return textResult(err instanceof Error ? err.message : String(err));
+          throw err instanceof Error ? err : new Error(String(err));
         }
 
         clearInterval(spinnerInterval);
@@ -1310,7 +1328,9 @@ Guidelines:
           : "";
 
         if (record.status === "error") {
-          return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
+          // Reported as a tool error by the tool_result handler above. Throwing here
+          // would lose the structured details the caller needs to inspect or clean up.
+          return textResult(`${fallbackNote}Agent failed: ${agentFailureReason(record)}`, details);
         }
         if (record.resultDelivery && !record.resultDelivery.ingested)
           return textResult(
@@ -1390,7 +1410,7 @@ Guidelines:
                 ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
                 : "Agent is still running. Use wait: true or check back later.";
         } else if (record.status === "error") {
-          output += `Error: ${record.error}`;
+          output += `Error: ${agentFailureReason(record)}`;
         } else {
           if (record.completionReport) {
             const r = record.completionReport;

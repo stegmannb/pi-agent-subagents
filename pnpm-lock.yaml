@@ -18,10 +18,6 @@ patchedDependencies:
 importers:
 
   .:
-    dependencies:
-      '@sinclair/typebox':
-        specifier: ^0.34.49
-        version: 0.34.49
     devDependencies:
       '@mariozechner/pi-ai':
         specifier: 0.73.0
@@ -35,6 +31,9 @@ importers:
       '@microsoft/tui-test':
         specifier: 0.1.0-beta.5
         version: 0.1.0-beta.5(patch_hash=cac4c086fb2ac01fd9a19e805ef0afeb5e2465ac04f19d956193fc9b92940789)
+      '@sinclair/typebox':
+        specifier: 0.34.49
+        version: 0.34.49
       '@types/node':
         specifier: ^24
         version: 24.12.4

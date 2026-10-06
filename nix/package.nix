@@ -1,15 +1,26 @@
 {
   stdenv,
   lib,
-  nodejs,
-  pnpm,
-  pnpmConfigHook,
-  fetchPnpmDeps,
 }:
 let
   packageJson = builtins.fromJSON (builtins.readFile ../package.json);
+  # pi supplies its host packages (pi-ai, pi-coding-agent, pi-tui, typebox) to
+  # extensions at runtime through its virtual module map, so the extension must
+  # not bundle them. Anything left in `dependencies` or `optionalDependencies`
+  # would be a genuine runtime dependency that this build does not install.
+  runtimeDependencies = lib.unique (
+    lib.attrNames (packageJson.dependencies or { })
+    ++ lib.attrNames (packageJson.optionalDependencies or { })
+  );
 in
-stdenv.mkDerivation (finalAttrs: {
+assert lib.assertMsg (runtimeDependencies == [ ]) ''
+  pi-agent-subagents declares runtime dependencies: ${lib.concatStringsSep ", " runtimeDependencies}.
+  This package intentionally ships no bundled node_modules; every runtime import must be
+  provided by pi as a host module or be a Node builtin. If a real runtime dependency is
+  needed, restore the pnpm/fetchPnpmDeps install in nix/package.nix (see git history) and
+  make sure the channel is deterministic again.
+'';
+stdenv.mkDerivation {
   pname = packageJson.name;
   version = packageJson.version;
 
@@ -25,29 +36,6 @@ stdenv.mkDerivation (finalAttrs: {
         "test-results"
       ]);
   };
-
-  pnpmDeps = fetchPnpmDeps {
-    inherit (finalAttrs) pname version src;
-    fetcherVersion = 3;
-    # Fetcher v3 uses this timestamp in its tarball; keep it independent of
-    # the source commit so unchanged dependencies retain their fixed hash.
-    SOURCE_DATE_EPOCH = 1;
-    hash =
-      if stdenv.hostPlatform.isDarwin then
-        "sha256-wq+dPxN9GKpsKkUvP7pi6TFGPAi6ekypqWFKZa3s4Jw="
-      else
-        "sha256-4ykMQgFB7faRL9wOb1AxYX+DYvRdAbmsnlpYbWv2fu4=";
-  };
-
-  nativeBuildInputs = [
-    nodejs
-    pnpm
-    pnpmConfigHook
-  ];
-
-  prePnpmInstall = ''
-    pnpmInstallFlags+=(--prod)
-  '';
 
   dontBuild = true;
 
@@ -67,4 +55,4 @@ stdenv.mkDerivation (finalAttrs: {
     maintainers = [ ];
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
-})
+}
