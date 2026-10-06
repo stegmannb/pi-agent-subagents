@@ -1,9 +1,10 @@
 name: process-protections
 
-on:
-  push:
+"on":
   pull_request:
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   NIX_CONFIG: |
@@ -35,6 +36,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Run required protection suite
         shell: bash

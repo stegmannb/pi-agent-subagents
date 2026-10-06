@@ -4,7 +4,7 @@
 
 A [pi](https://github.com/mariozechner/pi) extension that adds autonomous sub-agent support to the coding agent.
 
-The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents). Issues, pull requests, and CI belong there. [GitHub](https://github.com/stegmannb/pi-agent-subagents) synchronizes `main` and `release/*` in both directions. See [repository mirror](docs/repository-mirror.md) for its schedule, deletion handling and conflict rules.
+The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents). Issues, pull requests, and CI belong there. [GitHub](https://github.com/stegmannb/pi-agent-subagents) receives hourly updates of `main` and `release/*`. Incoming GitHub changes require reviewed Forgejo import PRs. See [repository synchronization](docs/repository-sync.md) for the contract.
 
 ## What it does
 
@@ -128,3 +128,7 @@ The [generic Taskflow qualification](docs/taskflow-qualification.md) runs real P
 review, correlated help, result ingestion and owned cleanup without external
 inference or Herdr. Use `pnpm run test:qualification` or the matching devenv task.
 It includes a separate required Linux VM check and does not deploy a workflow.
+
+## Protected synchronization
+
+See [the Tier-1 PR and synchronization contract](docs/repository-sync.md).

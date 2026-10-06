@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "tier": 1,
+  "releaseProfile": "none",
+  "owner": "Bastian",
+  "defaultBranch": "main",
+  "reviewDate": "2027-01-06",
+  "requiredChecks": [
+    "ci / policy (pull_request)",
+    "ci / typecheck (pull_request)",
+    "ci / lint (pull_request)",
+    "ci / format (pull_request)",
+    "ci / test (pull_request)",
+    "ci / nix (pull_request)",
+    "process-protections / process-protections (pull_request)",
+    "protection-vm / protection-vm-smoke (pull_request)"
+  ],
+  "workflows": [
+    "ci.yml",
+    "process-protections.yml",
+    "protection-vm.yml"
+  ],
+  "codeowners": "* @Bastian/Reviewers\n/.forgejo/ @Bastian/Reviewers\n/CODEOWNERS @Bastian/Reviewers\n/flake.nix @Bastian/Reviewers\n/flake.lock @Bastian/Reviewers\n/nix/ @Bastian/Reviewers\n/src/ @Bastian/Reviewers\n/index.ts @Bastian/Reviewers\n/scripts/ @Bastian/Reviewers\n/tests/ @Bastian/Reviewers\n/package.json @Bastian/Reviewers\n/pnpm-lock.yaml @Bastian/Reviewers\n"
+}

@@ -26,7 +26,6 @@
   },
   "homepage": "https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents",
   "scripts": {
-    "test:mirror": "node --test tests/sync-mirror.test.mjs",
     "fmt": "oxfmt src/ tests/ index.ts",
     "lint": "oxlint src/ tests/ index.ts",
     "check": "tsc --noEmit",

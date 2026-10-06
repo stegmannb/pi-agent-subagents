@@ -22,12 +22,6 @@
   '';
 
   tasks = {
-    "test:mirror" = {
-      description = "Test two-way synchronization with real Git repositories.";
-      exec = "node --test tests/sync-mirror.test.mjs";
-      showOutput = true;
-    };
-
     "deps:install" = {
       description = "Install the locked pnpm dependencies.";
       exec = "pnpm install --frozen-lockfile";

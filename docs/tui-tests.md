@@ -29,7 +29,7 @@ The suite runs one test file at a time because each case owns a real terminal pr
 
 ## CI and repository
 
-[Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents) is the primary repository. `.forgejo/workflows/test.yml` runs the required checks on pushes and pull requests and uploads terminal artifacts. GitHub is a mirror and has no separate test workflow. Use the Forgejo run for validation and review.
+[Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents) is the primary repository. `.forgejo/workflows/ci.yml` runs the required checks on exact pull-request heads and uploads terminal artifacts. GitHub is a mirror and has no separate test workflow. Use the Forgejo run for validation and review.
 
 CI uses the repository's `flake.lock` to provide Node 22.22.3 and pnpm 10.33.4 through `nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10`. It runs the same pnpm checks as the local devenv tasks, including the frozen dependency install. The checkout and Forgejo-compatible artifact actions are pinned to commit SHAs.
 

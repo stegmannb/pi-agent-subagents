@@ -1,0 +1,12 @@
+* @Bastian/Reviewers
+/.forgejo/ @Bastian/Reviewers
+/CODEOWNERS @Bastian/Reviewers
+/flake.nix @Bastian/Reviewers
+/flake.lock @Bastian/Reviewers
+/nix/ @Bastian/Reviewers
+/src/ @Bastian/Reviewers
+/index.ts @Bastian/Reviewers
+/scripts/ @Bastian/Reviewers
+/tests/ @Bastian/Reviewers
+/package.json @Bastian/Reviewers
+/pnpm-lock.yaml @Bastian/Reviewers

@@ -68,6 +68,14 @@
         in
         {
           default = package;
+          policy-tools = pkgs.buildEnv {
+            name = "repository-policy-tools";
+            paths = [
+              (pkgs.python3.withPackages (p: [ p.pyyaml ]))
+              pkgs.ruff
+            ];
+          };
+
           pi-agent-subagents = package;
         }
       );

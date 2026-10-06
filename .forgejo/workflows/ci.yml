@@ -1,0 +1,136 @@
+name: ci
+
+"on":
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    sandbox = false
+    keep-build-log = false
+  XDG_RUNTIME_DIR: /tmp/forgejo-runtime
+
+jobs:
+  policy:
+    runs-on: [k8s-executor-small, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run policy gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          tools="$(nix build --no-update-lock-file --no-link --print-out-paths .#policy-tools)"
+          export PATH="$tools/bin:$PATH"
+          python3 scripts/repository-policy.py
+          python3 -m unittest discover -s tests -p test_repository_policy.py
+          ruff check scripts/repository-policy.py tests/test_repository_policy.py
+          ruff format --check scripts/repository-policy.py tests/test_repository_policy.py
+
+  typecheck:
+    runs-on: [k8s-executor-small, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run typecheck gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 nixpkgs#git --command bash .forgejo/ci/node.sh typecheck
+
+  lint:
+    runs-on: [k8s-executor-small, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run lint gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 nixpkgs#git --command bash .forgejo/ci/node.sh lint
+
+  format:
+    runs-on: [k8s-executor-small, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run format gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 nixpkgs#git --command bash .forgejo/ci/node.sh format
+
+  test:
+    runs-on: [k8s-executor-medium, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run test gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix shell --inputs-from . nixpkgs#nodejs_22 nixpkgs#pnpm_10 nixpkgs#git --command bash .forgejo/ci/node.sh test
+      - name: Upload TUI failure artifacts
+        if: always()
+        uses: https://data.forgejo.org/actions/upload-artifact@c24449f33cd45d4826c6702db7e49f7cdb9b551d
+        with:
+          name: tui-test-results
+          path: test-results/
+          if-no-files-found: ignore
+
+  nix:
+    runs-on: [k8s-executor-small, amd64]
+    timeout-minutes: 25
+    container:
+      image: git.forest-arowana.ts.net/bastian/forgejo-runner-k8s@sha256:f038e4345561f4b0bb82bc31c9f6779394db574287779a437f261b7ec409e826
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run nix gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$XDG_RUNTIME_DIR"
+          nix flake show --all-systems
+          nix build --no-update-lock-file --no-link .#default
