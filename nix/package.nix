@@ -29,11 +29,14 @@ stdenv.mkDerivation (finalAttrs: {
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     fetcherVersion = 3;
+    # Fetcher v3 uses this timestamp in its tarball; keep it independent of
+    # the source commit so unchanged dependencies retain their fixed hash.
+    SOURCE_DATE_EPOCH = 1;
     hash =
       if stdenv.hostPlatform.isDarwin then
-        "sha256-8y5xqQHkwCUQVR86rFaAh0S9bmUWQSjAdsvJF1jpQ2g="
+        "sha256-wq+dPxN9GKpsKkUvP7pi6TFGPAi6ekypqWFKZa3s4Jw="
       else
-        "sha256-Fupz6XqfABKdm2mNJ5qKD0YN5CQ5wqgybJoakvznNsY=";
+        "sha256-4ykMQgFB7faRL9wOb1AxYX+DYvRdAbmsnlpYbWv2fu4=";
   };
 
   nativeBuildInputs = [
