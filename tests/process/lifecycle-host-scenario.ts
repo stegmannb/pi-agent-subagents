@@ -108,7 +108,8 @@ export async function setup(scenario: string, human = false, duplicate = false) 
     }),
   );
   const questions: string[] = [],
-    outcomes: unknown[] = [];
+    outcomes: unknown[] = [],
+    outcomeIsError: boolean[] = [];
   const parent = await startProtectionParent({
     executable: process.execPath,
     args: [
@@ -148,7 +149,10 @@ export async function setup(scenario: string, human = false, duplicate = false) 
       };
     },
     onEvent: (e) => {
-      if (e.type === "tool_execution_end" && e.toolName === "Agent") outcomes.push(e.result);
+      if (e.type === "tool_execution_end" && e.toolName === "Agent") {
+        outcomes.push(e.result);
+        outcomeIsError.push(e.isError);
+      }
     },
   });
   const prompt = parent.prompt(
@@ -170,6 +174,7 @@ export async function setup(scenario: string, human = false, duplicate = false) 
     disconnected,
     questions,
     outcomes,
+    outcomeIsError,
     cancelQuestion: () => childSocket!.write("cancel\n"),
     record: async () =>
       JSON.parse(

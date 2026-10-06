@@ -775,6 +775,16 @@ export default function (pi: ExtensionAPI) {
     widget.onTurnStart();
   });
 
+  // A foreground agent whose run failed resolves with status "error" instead of
+  // rejecting, so its result needs this marker to reach the model as a failed call.
+  // The status check keeps the structured details, which a throw would discard.
+  pi.on("tool_result", (event) => {
+    if (event.toolName !== "Agent") return;
+    const details = event.details as { status?: string } | undefined;
+    if (details?.status !== "error") return;
+    return { isError: true };
+  });
+
   // ---- Settings ----
 
   // ---- Type list ----
@@ -1319,6 +1329,8 @@ Guidelines:
           : "";
 
         if (record.status === "error") {
+          // Reported as a tool error by the tool_result handler above. Throwing here
+          // would lose the structured details the caller needs to inspect or clean up.
           return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
         }
         if (record.resultDelivery && !record.resultDelivery.ingested)
