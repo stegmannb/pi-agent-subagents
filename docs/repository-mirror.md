@@ -35,6 +35,26 @@ reviewing and migrating or removing that internal checkpoint first. Keep remote
 URLs free of embedded passwords or tokens. SSH host keys are pinned in the
 workflow and the deploy key grants access only to the two mirrored repositories.
 
+## Parameterized deployments
+
+The same algorithm can run from `.forgejo/scripts/sync-mirror.mjs` in other
+repositories. Parameterized workflows keep deployment values in repository
+Actions variables instead of embedding site-specific configuration in source:
+
+- `MIRROR_LEFT_URL` and `MIRROR_RIGHT_URL` contain Git remote URLs without passwords.
+- `MIRROR_KNOWN_HOSTS` contains independently verified SSH host keys.
+- `MIRROR_BRANCHES` and `MIRROR_TAGS` contain JSON arrays of wildcard patterns.
+  An empty tag array excludes tags. Branch patterns must contain at least one
+  nonempty pattern. Workflows pass these patterns through the script's repeated
+  `--branch` and `--tag` options.
+- The `TWO_WAY_MIRROR_SSH_KEY` Actions secret holds a dedicated deploy key with
+  write access to the selected repository pair. Use a separate key per pair.
+
+Copy the integration tests alongside the script and adjust their script import
+path. Run them with `node --test .forgejo/scripts/sync-mirror.test.mjs`. Preserve
+the source provider's branch protections when selecting a deployment method;
+direct synchronization cannot update branches that reject deploy-key pushes.
+
 An existing provider push mirror must be removed before enabling this workflow,
 because it can overwrite changes that have not yet been imported. Issues,
 pull requests, Actions runs and release assets are provider metadata and are
