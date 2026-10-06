@@ -19,7 +19,7 @@ env:
 
 jobs:
   sync:
-    runs-on: [k8s-executor-medium, amd64]
+    runs-on: [k8s-executor-small, amd64]
     timeout-minutes: 5
     steps:
       # Always run the trusted default-branch script, including deletion events.
