@@ -4,7 +4,7 @@
 
 A [pi](https://github.com/mariozechner/pi) extension that adds autonomous sub-agent support to the coding agent.
 
-The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents). Issues, pull requests, and CI belong there. [GitHub](https://github.com/stegmannb/pi-agent-subagents) is a mirror.
+The primary repository is [Bastian/pi-agent-subagents on Forgejo](https://git.forest-arowana.ts.net/Bastian/pi-agent-subagents). Issues, pull requests, and CI belong there. [GitHub](https://github.com/stegmannb/pi-agent-subagents) synchronizes `main` and `release/*` in both directions. See [repository mirror](docs/repository-mirror.md) for its schedule, deletion handling and conflict rules.
 
 ## What it does
 
