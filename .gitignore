@@ -6,3 +6,6 @@ node_modules/
 result
 test-results/
 .tui-test/
+
+__pycache__/
+*.pyc
