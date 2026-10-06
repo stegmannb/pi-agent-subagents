@@ -1,8 +1,8 @@
 # Repository mirror
 
 `scripts/sync-mirror.mjs` synchronizes selected Git branches and tags between
-two named remotes. `.forgejo/workflows/mirror.yml` runs it on pushes, deletions,
-manual dispatch and a five-minute schedule. The workflow always checks out
+two named remotes. `.forgejo/workflows/mirror.yml` runs it hourly at the top of
+the hour and on manual dispatch. The workflow always checks out
 `main`, serializes its runs and authenticates with a repository-scoped SSH
 deploy key stored in the `TWO_WAY_MIRROR_SSH_KEY` Actions secret.
 
