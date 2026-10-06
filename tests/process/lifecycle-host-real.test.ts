@@ -190,6 +190,7 @@ test(
       assert.equal(value.delivery?.ingested, false);
       assert.equal(value.delivery?.identity.childProcessId, value.processId);
       assert.ok(JSON.stringify(f.outcomes).includes("Agent failed"));
+      assert.equal(f.outcomeIsError[0], true, JSON.stringify(f.outcomes));
       const before = JSON.stringify(value);
       await assert.rejects(
         f.parent.command(`/life-control ${JSON.stringify({ handle: value, action: "cleanup" })}`),

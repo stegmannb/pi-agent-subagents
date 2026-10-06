@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { AgentManager } from "./agent-manager.ts";
+import { AgentManager, agentFailureReason } from "./agent-manager.ts";
 import type { AgentRecord } from "./types.ts";
 import { cleanupWorktree, createWorktree, inspectWorktree } from "./worktree.ts";
 
@@ -103,6 +103,25 @@ for (const removal of ["clearCompleted", "cleanup"] as const) {
     assert.equal((await cleanupWorktree(cwd, worktree)).removed, true);
   });
 }
+
+test("agentFailureReason names the process phase when the run recorded no error", () => {
+  const withPhase = (phase: string) =>
+    agentFailureReason({ process: { phase } } as unknown as Pick<AgentRecord, "error" | "process">);
+  assert.equal(withPhase("lost"), "process identity lost, no process is left to resume");
+  assert.equal(
+    withPhase("uncertain"),
+    "process identity uncertain, verify the process before resuming",
+  );
+  assert.equal(withPhase("detached"), "no failure reason reported");
+});
+
+test("agentFailureReason prefers a recorded error", () => {
+  assert.equal(
+    agentFailureReason({ error: "worktree creation failed" }),
+    "worktree creation failed",
+  );
+  assert.equal(agentFailureReason({}), "no failure reason reported");
+});
 
 test("ordinary extension refuses RPC selection before recording a phantom agent", async () => {
   const { createEventBus } = await import("@mariozechner/pi-coding-agent");

@@ -1,6 +1,6 @@
 # Retained worktrees
 
-`Agent` accepts `isolation: "worktree"` with an optional `worktree_base` naming an existing branch, tag or commit. The default is `HEAD` in `cwd`. Git resolves that value to a commit before creating a detached worktree. Moving the source branch afterward does not change the child's base. These modes do not copy uncommitted parent files. Use explicit `worktree_snapshot` for working changes. Both selections are rejected without worktree isolation or on resume, and cannot be combined.
+`Agent` accepts `isolation: "worktree"` with an optional `worktree_base` naming an existing branch, tag or commit. The default is `HEAD` in `cwd`. Git resolves that value to a commit before creating a detached worktree. Moving the source branch afterward does not change the child's base. These modes do not copy uncommitted parent files. Use explicit `worktree_snapshot` for working changes. Both selections are rejected without worktree isolation or on resume, and cannot be combined: `worktree_base` and `worktree_snapshot` are alternatives, never a pair. A rejected selection fails the `Agent` call with an error naming the offending parameters, so the caller must correct its arguments instead of repeating the call.
 
 Worktrees live under `<git-common-dir>/pi-agent-worktrees/<uuid>`, outside the parent's working files and system temporary directories. The returned identity is the actual per-worktree Git administrative directory. Its `pi-subagents.json` registration stores the path, immutable `baseCommit`, agent ID and common repository directory. A detached worktree has no branch field. If the child creates a branch, inspection reports its real name.
 
@@ -56,7 +56,8 @@ Agent(
 ```
 
 An empty `worktree_snapshot: {}` copies tracked working changes and selects no
-untracked files. Omitting it keeps the default committed-HEAD behavior. Resume
+untracked files. Omitting it keeps the default committed-HEAD behavior; passing
+it together with `worktree_base` is an error. Resume
 uses the existing workspace; it does not take another snapshot.
 
 The additive TypeScript API in `src/worktree.ts` creates a retained child from the parent's current working files:

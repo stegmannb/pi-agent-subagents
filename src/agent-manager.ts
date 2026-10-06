@@ -21,6 +21,7 @@ import type {
 } from "./types.ts";
 import { appendErrorEntry } from "./output-file.ts";
 import { addUsage } from "./usage.ts";
+import { worktreeSelectionError } from "./worktree-selection.ts";
 import {
   createWorktree,
   createSnapshotWorktree,
@@ -35,6 +36,21 @@ export type CompactionInfo = {
   reason: "manual" | "threshold" | "overflow";
   tokensBefore: number;
 };
+
+// A lost or uncertain process identity fails the run without ever setting record.error, so the
+// phase is the only reason left to report.
+const PROCESS_PHASE_FAILURES: Record<string, string> = {
+  lost: "process identity lost, no process is left to resume",
+  uncertain: "process identity uncertain, verify the process before resuming",
+};
+
+export function agentFailureReason(record: Pick<AgentRecord, "error" | "process">): string {
+  return (
+    record.error ??
+    PROCESS_PHASE_FAILURES[record.process?.phase ?? ""] ??
+    "no failure reason reported"
+  );
+}
 
 const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -142,11 +158,12 @@ export class AgentManager {
         throw new Error("ROLE_DELEGATION_FORBIDDEN");
       options = { ...options, runner: "rpc" };
     }
-    if (
-      options.worktreeSnapshot &&
-      (options.isolation !== "worktree" || options.worktreeBase !== undefined)
-    )
-      throw new Error("worktree_snapshot requires isolation: worktree without worktree_base.");
+    const selectionError = worktreeSelectionError({
+      isolation: options.isolation,
+      worktree_base: options.worktreeBase,
+      worktree_snapshot: options.worktreeSnapshot,
+    });
+    if (selectionError) throw new Error(selectionError);
     if (options.runner === "rpc") requireProcessRunner(pi.events);
     const id = randomUUID().slice(0, 17);
     const abortController = new AbortController();
