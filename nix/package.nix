@@ -29,7 +29,11 @@ stdenv.mkDerivation (finalAttrs: {
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     fetcherVersion = 3;
-    hash = "sha256-zreyIFKBpwjobij1Nc8Nm3RU9qr4pzYv6DIyj8/iZi8=";
+    hash =
+      if stdenv.hostPlatform.isDarwin then
+        "sha256-8y5xqQHkwCUQVR86rFaAh0S9bmUWQSjAdsvJF1jpQ2g="
+      else
+        "sha256-Fupz6XqfABKdm2mNJ5qKD0YN5CQ5wqgybJoakvznNsY=";
   };
 
   nativeBuildInputs = [
