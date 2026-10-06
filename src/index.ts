@@ -22,7 +22,8 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { AgentManager } from "./agent-manager.ts";
+import { AgentManager, agentFailureReason } from "./agent-manager.ts";
+import { plainAgentErrorText } from "./agent-error-text.ts";
 import {
   getAgentConversation,
   agentContext,
@@ -940,10 +941,8 @@ Guidelines:
 
       renderResult(result, { expanded, isPartial }, theme, context) {
         const details = result.details as AgentDetails | undefined;
-        if (context.isError) {
-          const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-          return new Text(theme.fg("error", text || "Agent call failed."), 0, 0);
-        }
+        const plainError = plainAgentErrorText(result.content, details, context.isError);
+        if (plainError) return new Text(theme.fg("error", plainError), 0, 0);
         if (!details) {
           const text = result.content[0]?.type === "text" ? result.content[0].text : "";
           return new Text(text, 0, 0);
@@ -1331,7 +1330,7 @@ Guidelines:
         if (record.status === "error") {
           // Reported as a tool error by the tool_result handler above. Throwing here
           // would lose the structured details the caller needs to inspect or clean up.
-          return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
+          return textResult(`${fallbackNote}Agent failed: ${agentFailureReason(record)}`, details);
         }
         if (record.resultDelivery && !record.resultDelivery.ingested)
           return textResult(
@@ -1411,7 +1410,7 @@ Guidelines:
                 ? `Agent is waiting for help from parent.\nHelp message: ${record.helpMessage ?? "(none)"}\n\nRespond with steer_subagent("${record.id}", "<your response>")`
                 : "Agent is still running. Use wait: true or check back later.";
         } else if (record.status === "error") {
-          output += `Error: ${record.error}`;
+          output += `Error: ${agentFailureReason(record)}`;
         } else {
           if (record.completionReport) {
             const r = record.completionReport;

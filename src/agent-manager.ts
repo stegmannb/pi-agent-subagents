@@ -37,6 +37,21 @@ export type CompactionInfo = {
   tokensBefore: number;
 };
 
+// A lost or uncertain process identity fails the run without ever setting record.error, so the
+// phase is the only reason left to report.
+const PROCESS_PHASE_FAILURES: Record<string, string> = {
+  lost: "process identity lost, no process is left to resume",
+  uncertain: "process identity uncertain, verify the process before resuming",
+};
+
+export function agentFailureReason(record: Pick<AgentRecord, "error" | "process">): string {
+  return (
+    record.error ??
+    PROCESS_PHASE_FAILURES[record.process?.phase ?? ""] ??
+    "no failure reason reported"
+  );
+}
+
 const DEFAULT_MAX_CONCURRENT = 4;
 
 interface SpawnArgs {
