@@ -2,7 +2,11 @@
 
 Forgejo is canonical and uses Tier 1 with release profile `none`. Main accepts
 reviewed PR merges only, including administrator changes. Current CI and one
-independent approval from Reviewers are required; only Owners merge.
+independent approval from Reviewers are required. A human or agent in the
+protected-branch merge allowlist may merge, including an agent's own PR after an
+official approval from a different identity. Self-approval, direct pushes and
+administrator bypass remain forbidden. Separate task-specific apply gates remain
+in force.
 
 An external coordinator publishes selected Forgejo branches hourly. Incoming
 GitHub commits create or update Forgejo import PRs and receive the same gates.
